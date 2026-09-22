@@ -192,6 +192,7 @@ import AppKit
         }
         let m = state.latest?.devices[d.id]
         func v(_ key: String) -> Double? { m?.value(key) }
+        let power = v("power").flatMap { $0.isFinite ? $0 : nil }
         func meta(_ key: String) -> String { d.metadata[key].flatMap { $0.isEmpty ? nil : $0 } ?? "—" }
         let zh = AppModel.shared.preferences.language == "zh"
         var facts: [(String, String)] = []; var factsX: CGFloat = 228; var keyWidth: CGFloat = zh ? 86 : 138
@@ -205,7 +206,8 @@ import AppKit
             let uptime = state.latest.map { Int($0.uptime) }
             let duration = uptime.map { String(format: "%d:%02d:%02d:%02d", $0 / 86400, $0 / 3600 % 24, $0 / 60 % 60, $0 % 60) } ?? "—"
             stat(tr("正常运行时间", "Up time"), duration, x: 0, y: 112, w: 225)
-            let temperature = stat(tr("温度", "Temperature"), number(v("temperature"), " °C", digits: 0), x: 0, y: 168, w: 180)
+            if let power { stat(tr("功耗", "Power"), number(power, " W"), x: 0, y: 168, w: 110) }
+            let temperature = stat(tr("温度", "Temperature"), number(v("temperature"), " °C", digits: 0), x: power == nil ? 0 : 114, y: 168, w: 110)
             temperature.toolTip = (m?.sensors ?? [:]).sorted { $0.key < $1.key }.map { $0.key + ": " + number($0.value, " °C") }.joined(separator: "\n")
             facts = [(tr("最高频率", "Maximum clock"), number(d.metadata["maxFrequency"].flatMap(Double.init).map { $0 / 1000 }, " GHz", digits: 2)),
                      (tr("插槽", "Sockets"), meta("sockets")), (tr("内核", "Cores"), meta("cores")),
@@ -227,7 +229,8 @@ import AppKit
             stat(tr("平均响应时间", "Average response time"), number(v("latency"), tr(" 毫秒", " ms")), x: 78, y: 0, w: 194)
             stat(tr("读取速度", "Read speed"), bytes(v("read"), perSecond: true), x: 8, y: 56, w: 151)
             stat(tr("写入速度", "Write speed"), bytes(v("write"), perSecond: true), x: 167, y: 56, w: 150)
-            stat(tr("温度", "Temperature"), number(v("temperature"), " °C", digits: 0), x: 8, y: 112)
+            if let power { stat(tr("功耗", "Power"), number(power, " W"), x: 8, y: 112, w: 151) }
+            stat(tr("温度", "Temperature"), number(v("temperature"), " °C", digits: 0), x: power == nil ? 8 : 167, y: 112, w: 145)
             factsX = 315; keyWidth = zh ? 86 : 116
             facts = [(tr("容量", "Capacity"), bytes(v("capacity"))), (tr("已格式化", "Formatted"), bytes(v("total"))),
                      (tr("系统磁盘", "System disk"), d.metadata["system"].map { $0 == "true" ? tr("是", "Yes") : tr("否", "No") } ?? "—"),
@@ -259,9 +262,9 @@ import AppKit
             stat(tr("利用率", "Utilization"), number(v("usage"), "%", digits: 0), x: 0, y: 0, w: 130)
             let unified = stat(tr("统一内存", "Unified memory"), memoryPair(memory?.value("used"), memory?.value("total")), x: 145, y: 0, w: 210)
             unified.toolTip = tr("整机 CPU 与 GPU 共享池的已用 / 总量，不是 GPU 独占内存。", "System-wide CPU/GPU pool: in use / total. Not a GPU-only allocation.")
-            stat(tr("功耗", "Power"), number(v("power"), " W"), x: 0, y: 56, w: 130)
-            stat(tr("频率", "Clock"), number(v("frequency"), " MHz", digits: 0), x: 145, y: 56, w: 160)
-            stat(tr("温度", "Temperature"), number(v("temperature"), " °C", digits: 0), x: 145, y: 112, w: 130)
+            stat(tr("频率", "Clock"), number(v("frequency"), " MHz", digits: 0), x: 0, y: 56, w: 160)
+            if let power { stat(tr("功耗", "Power"), number(power, " W"), x: 0, y: 112, w: 130) }
+            stat(tr("温度", "Temperature"), number(v("temperature"), " °C", digits: 0), x: power == nil ? 0 : 145, y: 112, w: 130)
             factsX = 362; keyWidth = zh ? 106 : 112
             facts = [(tr("驱动版本", "Driver version"), meta("driver")),
                      (tr("内存架构", "Memory model"), tr("CPU / GPU 共享", "CPU / GPU shared")), (tr("PCI 位置", "PCI location"), meta("pci"))]
