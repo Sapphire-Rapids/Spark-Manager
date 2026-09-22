@@ -101,7 +101,6 @@ import AppKit
         for (index, row) in rows.enumerated() {
             row.device = devices[index]
             row.editing = editingHardware; row.visible = state.isVisible(row.device); row.needsLayout = true
-            row.setAccessibilityElement(!editingHardware)
             let d = row.device, m = state.latest?.devices[d.id]
             row.selected = d.id == selected?.id
             row.nameLabel.stringValue = deviceTitle(d)

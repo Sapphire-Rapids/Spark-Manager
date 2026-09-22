@@ -4,6 +4,8 @@ A native Swift/AppKit macOS performance monitor for NVIDIA DGX Spark, with a Win
 
 **macOS 14+, Apple Silicon.** MIT licensed. Independent community software; not an NVIDIA, Microsoft, or Apple product.
 
+[Download the macOS preview / 下载 macOS 测试版](https://github.com/Sapphire-Rapids/Spark-Manager/releases)
+
 ## 中文
 
 ### 使用
