@@ -16,9 +16,9 @@ A native Swift/AppKit macOS performance monitor for NVIDIA DGX Spark, with a Win
 
 - CPU 图右键切换总体利用率和逻辑处理器。Spark 的 20 核使用 5×4 网格。
 - CPU 的浅色区域为用户态，深色区域为系统态；两者合计为总利用率。
-- 右上角切换中文／EN、浅色／深色／系统主题。
+- 右上角切换中文／EN；“…”菜单切换浅色／深色／系统主题。
 - 每台机器的硬件列表底部有“编辑”，只控制设备的显示／隐藏。
-- 窗口每容纳约 860pt 就增加一列；顶部标签切换当前列的机器。所有已连接机器持续采样。
+- 机器切换位于左侧 Windows 风格导航栏。点击机器替换当前列；汉堡按钮可收起导航。右侧每容纳约 860pt 就增加一列，所有已连接机器持续采样。
 - 关闭窗口即退出应用，关闭 SSH 连接和临时采集程序。历史只有最近 60 秒，不写入磁盘。
 - 连接设置也提供“断开连接”和“移除连接”。离线图表留空，不填充虚构的 0。
 
@@ -40,7 +40,7 @@ Drag the app into `/Applications`, launch it, and add an SSH connection. Passwor
 
 Confirm the first host fingerprint against a trusted source. Changed host keys require explicit re-confirmation in connection settings. No remote SSH configuration is modified.
 
-Right-click the CPU chart to choose overall or logical-processor utilization. Use the top-right controls for language and appearance. **Edit** at the bottom of each hardware list changes visibility only. Wider windows show multiple machines; tabs replace the focused column. Every connected machine continues collecting even when hidden. Closing the window exits the application and terminates its SSH-owned sampler.
+Right-click the CPU chart to choose overall or logical-processor utilization. Use the top-right language switch and the ellipsis menu for appearance. **Edit** at the bottom of each hardware list changes visibility only. Wider windows show multiple machines; the left navigation replaces the focused column. The hamburger button collapses the navigation. Every connected machine continues collecting even when hidden. Closing the window exits the application and terminates its SSH-owned sampler.
 
 History is an in-memory 60-second window. Missing data and disconnections remain gaps. The first run contains no configured hosts. Local preferences live in `~/Library/Application Support/SparkMonitorPreview/`.
 
@@ -84,6 +84,11 @@ See [third-party notices](docs/THIRD_PARTY.md) and [MIT license](LICENSE).
 
 All screenshots below use clearly labeled synthetic data, not a real machine.
 
+![CPU](docs/screenshots/cpu-zh.png)
+![Memory](docs/screenshots/memory-zh.png)
+![Disk](docs/screenshots/disk-zh.png)
+![Network](docs/screenshots/network-zh.png)
+![GPU](docs/screenshots/gpu-zh.png)
 ![Light, English](docs/screenshots/light-en.png)
 ![Dark, Chinese, logical processors](docs/screenshots/dark-zh-cores.png)
 ![Two machines](docs/screenshots/wide-two-machines.png)

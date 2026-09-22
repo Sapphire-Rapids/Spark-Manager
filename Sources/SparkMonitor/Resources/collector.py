@@ -102,19 +102,36 @@ def disk_mounts(name):
 def inventory():
     mem = memory()
     cores = sorted(Path('/sys/devices/system/cpu').glob('cpu[0-9]*'))
-    cpu_model = 'NVIDIA Grace · GB10'
+    cpu_model = 'NVIDIA GB10'
+    sockets = {read(p / 'topology/physical_package_id') for p in cores}
+    sockets.discard(None)
+    cache_sizes = {}
+    for p in cores:
+        for cache in (p / 'cache').glob('index*'):
+            level, kind, shared = read(cache / 'level'), read(cache / 'type'), read(cache / 'shared_cpu_list')
+            size = re.fullmatch(r'(\d+)([KMG])', read(cache / 'size') or '')
+            if size:
+                cache_sizes[(level, kind, shared)] = int(size[1]) * (1024 ** ('KMG'.index(size[2]) + 1))
+    cpu_meta = {'cores': str(len(cores)), 'architecture': os.uname().machine, 'sockets': str(len(sockets)) if sockets else ''}
+    for level in ['1', '2', '3']:
+        total = sum(v for (l, _, _), v in cache_sizes.items() if l == level)
+        if total: cpu_meta['cacheL' + level] = str(total)
     devices = [
         dict(id='cpu', kind='cpu', name='CPU', model=cpu_model, defaultVisible=True,
-             metadata={'cores': str(len(cores)), 'architecture': os.uname().machine}),
-        dict(id='memory', kind='memory', name='Memory', model='LPDDR5X · Unified memory', defaultVisible=True,
+             metadata=cpu_meta),
+        dict(id='memory', kind='memory', name='Memory', model='LPDDR5X', defaultVisible=True,
              metadata={'total': str(int(mem['MemTotal']))})]
+    disk_index = 0
     for disk in sorted(Path('/sys/block').iterdir()):
         if not (disk / 'device').exists() or disk.name.startswith(('loop', 'ram', 'zram')):
             continue
+        mounts = disk_mounts(disk.name)
         devices.append(dict(id='disk:' + disk.name, kind='disk', name=disk.name,
                             model=read(disk / 'device/model') or disk.name, defaultVisible=True,
-                            metadata={'mounts': json.dumps(disk_mounts(disk.name)), 'device': disk.name,
+                            metadata={'mounts': json.dumps(mounts), 'device': disk.name, 'index': str(disk_index),
+                                      'system': str('/' in mounts).lower(), 'type': 'SSD (NVMe)' if disk.name.startswith('nvme') else 'Disk',
                                       'capacity': str(int(read(disk / 'size') or 0) * 512)}))
+        disk_index += 1
     address_data = json.loads(command(['ip', '-j', 'addr']) or '[]')
     for net in sorted(Path('/sys/class/net').iterdir()):
         if net.name == 'lo':
@@ -124,13 +141,17 @@ def inventory():
         physical = (net / 'device').exists()
         meta = {'interface': net.name, 'type': kind if physical else 'Virtual',
                 'address': ', '.join(a['local'] for a in addresses if a.get('scope') == 'global')}
+        meta['ipv4'] = ', '.join(a['local'] for a in addresses if a.get('family') == 'inet')
+        meta['ipv6'] = ', '.join(a['local'] for a in addresses if a.get('family') == 'inet6' and a.get('scope') == 'global')
+        driver = (net / 'device/driver').resolve().name if physical else ''
+        adapter_model = {'mlx5_core': 'NVIDIA ConnectX-7', 'mt7925e': 'MediaTek Wi-Fi 7 MT7925', 'r8127': 'Realtek RTL8127'}.get(driver, meta['type'])
         rdma = []
         for hca in Path('/sys/class/infiniband').glob('*'):
             for gid in hca.glob('ports/*/gid_attrs/ndevs/*'):
                 if read(gid) == net.name:
                     rdma.append(str(gid.parents[2])); break
         meta['rdma_ports'] = json.dumps(rdma)
-        devices.append(dict(id='net:' + net.name, kind='network', name=net.name, model=meta['type'],
+        devices.append(dict(id='net:' + net.name, kind='network', name=net.name, model=adapter_model,
                             defaultVisible=physical and read(net / 'operstate') == 'up', metadata=meta))
     raw = command(['nvidia-smi', '--query-gpu=index,uuid,name,driver_version', '--format=csv,noheader,nounits'])
     for row in csv.reader((raw or '').splitlines()):
@@ -141,9 +162,9 @@ def inventory():
 
 
 def gpu_metrics():
-    fields = 'uuid,utilization.gpu,utilization.memory,temperature.gpu,power.draw,clocks.current.graphics'
+    fields = 'uuid,utilization.gpu,utilization.memory,temperature.gpu,power.draw,clocks.current.graphics,utilization.encoder,utilization.decoder'
     raw = command(['nvidia-smi', '--query-gpu=' + fields, '--format=csv,noheader,nounits'])
-    return {'gpu:' + r[0].strip(): {'values': dict(zip(['usage', 'memoryActivity', 'temperature', 'power', 'frequency'],
+    return {'gpu:' + r[0].strip(): {'values': dict(zip(['usage', 'memoryActivity', 'temperature', 'power', 'frequency', 'encoder', 'decoder'],
                                                      [numeric(x.strip()) for x in r[1:]]))}
             for r in csv.reader((raw or '').splitlines())}
 
@@ -162,6 +183,8 @@ def sample(inv, previous):
     cpu_values.update(temperature=max(cpu_temperatures.values(), default=None),
                       frequency=sum(frequencies) / len(frequencies) if frequencies else None,
                       load=float(Path('/proc/loadavg').read_text().split()[0]))
+    cpu_values['processes'] = len(list(Path('/proc').glob('[0-9]*')))
+    cpu_values['threads'] = int(Path('/proc/loadavg').read_text().split()[3].split('/')[1])
     metrics = {'cpu': {'values': cpu_values, 'sensors': cpu_temperatures,
                        'cores': [dict(cpu_ratio(old_cpu.get(k, cpu[k]), cpu[k]), index=int(k[3:]))
                                  for k in sorted(cpu, key=lambda k: int(k[3:] or '-1')) if k != 'cpu']},
@@ -169,6 +192,7 @@ def sample(inv, previous):
                           'used': mem['MemTotal'] - mem['MemAvailable'],
                           'usage': (mem['MemTotal'] - mem['MemAvailable']) * 100 / mem['MemTotal'],
                           'cached': mem.get('Cached', 0) + mem.get('SReclaimable', 0),
+                          'committed': mem.get('Committed_AS'), 'commitLimit': mem.get('CommitLimit'),
                           'swapTotal': mem['SwapTotal'], 'swapUsed': mem['SwapTotal'] - mem['SwapFree']}}}
     for dev in inv['devices']:
         meta = dev['metadata']
@@ -181,6 +205,9 @@ def sample(inv, previous):
             vals = {'usage': min(100, used) if used is not None else None,
                     'read': rate(old[2], cur[2], dt, 512), 'write': rate(old[6], cur[6], dt, 512),
                     'temperature': temp / 1000 if temp is not None else None, 'capacity': float(meta['capacity'])}
+            operations = cur[0] + cur[4] - old[0] - old[4]
+            io_time = cur[3] + cur[7] - old[3] - old[7]
+            vals['latency'] = io_time / operations if operations > 0 and io_time >= 0 else 0 if operations == 0 else None
             total = free = 0
             for mount in json.loads(meta['mounts']):
                 try:

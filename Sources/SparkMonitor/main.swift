@@ -10,11 +10,11 @@ import AppKit
         if CommandLine.arguments.contains("--english") { model.preferences.language = "en" }
         if CommandLine.arguments.contains("--dark") { model.preferences.theme = "dark" }
         if CommandLine.arguments.contains("--light") { model.preferences.theme = "light" }
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1100, height: 810), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
-        window.title = "Spark Monitor · Preview"
-        window.minSize = NSSize(width: 884, height: 790)
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1280, height: 720), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
+        window.title = "Spark Monitor"
+        window.minSize = NSSize(width: 920, height: 740)
         window.isReleasedWhenClosed = false
-        dashboard = DashboardView(frame: NSRect(x: 0, y: 0, width: 1100, height: 810))
+        dashboard = DashboardView(frame: NSRect(x: 0, y: 0, width: 1280, height: 720))
         window.contentView = dashboard
         let appMenu = NSMenu(); let appItem = NSMenuItem(); appMenu.addItem(appItem)
         let menu = NSMenu(); menu.addItem(withTitle: "Quit Spark Monitor", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
@@ -46,14 +46,20 @@ import AppKit
         let model = AppModel.shared
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            for (name, theme, language, logical, width) in [
-                ("light-en", "light", "en", false, 1100.0),
-                ("dark-zh-cores", "dark", "zh", true, 1100.0),
-                ("wide-two-machines", "light", "en", false, 1800.0)
+            for (name, theme, language, logical, device, width) in [
+                ("cpu-zh", "light", "zh", true, "cpu", 1280.0),
+                ("memory-zh", "light", "zh", false, "memory", 1280.0),
+                ("disk-zh", "light", "zh", false, "disk:demo", 1280.0),
+                ("network-zh", "light", "zh", false, "net:demo", 1280.0),
+                ("gpu-zh", "light", "zh", false, "gpu:demo", 1280.0),
+                ("light-en", "light", "en", false, "cpu", 1280.0),
+                ("dark-zh-cores", "dark", "zh", true, "cpu", 1280.0),
+                ("wide-two-machines", "light", "en", false, "cpu", 2320.0)
             ] {
                 model.preferences.theme = theme; model.preferences.language = language
                 model.hosts[0].profile.logicalCPU = logical
-                window.setContentSize(NSSize(width: width, height: 810))
+                model.hosts[0].profile.selectedDevice = device
+                window.setContentSize(NSSize(width: width, height: 720))
                 model.applyTheme(); dashboard.refresh(); dashboard.layoutSubtreeIfNeeded()
                 let rep = dashboard.bitmapImageRepForCachingDisplay(in: dashboard.bounds)!
                 dashboard.cacheDisplay(in: dashboard.bounds, to: rep)

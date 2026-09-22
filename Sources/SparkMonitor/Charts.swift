@@ -3,16 +3,27 @@ import AppKit
 @MainActor enum Style {
     static var dark: Bool { NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua }
     static var surface: NSColor { dark ? NSColor(white: 0.13, alpha: 1) : .white }
-    static var sidebar: NSColor { dark ? NSColor(white: 0.16, alpha: 1) : NSColor(white: 0.97, alpha: 1) }
-    static var grid: NSColor { dark ? NSColor(white: 0.27, alpha: 1) : NSColor(white: 0.88, alpha: 1) }
-    static var selected: NSColor { dark ? NSColor(white: 0.23, alpha: 1) : NSColor(white: 0.92, alpha: 1) }
+    static var sidebar: NSColor { dark ? NSColor(white: 0.16, alpha: 1) : NSColor(srgbRed: 0.947, green: 0.954, blue: 0.960, alpha: 1) }
+    static var grid: NSColor { dark ? NSColor(white: 0.20, alpha: 1) : NSColor(white: 0.947, alpha: 1) }
+    static var selected: NSColor { dark ? NSColor(white: 0.19, alpha: 1) : NSColor(white: 0.962, alpha: 1) }
+    static var border: NSColor { dark ? NSColor(white: 0.38, alpha: 1) : NSColor(white: 0.74, alpha: 1) }
+    static func fill(_ kind: HardwareKind) -> NSColor {
+        if dark { return color(kind).withAlphaComponent(0.25) }
+        switch kind {
+        case .cpu: return NSColor(srgbRed: 0.73, green: 0.88, blue: 0.94, alpha: 1)
+        case .memory: return NSColor(srgbRed: 0.78, green: 0.87, blue: 0.99, alpha: 1)
+        case .disk: return NSColor(srgbRed: 0.82, green: 0.92, blue: 0.67, alpha: 1)
+        case .network: return NSColor(srgbRed: 0.95, green: 0.79, blue: 0.85, alpha: 1)
+        case .gpu: return NSColor(srgbRed: 0.86, green: 0.76, blue: 0.98, alpha: 1)
+        }
+    }
     static func color(_ kind: HardwareKind) -> NSColor {
         switch kind {
-        case .cpu: return NSColor(srgbRed: 0.15, green: 0.52, blue: 0.69, alpha: 1)
-        case .memory: return NSColor(srgbRed: 0.38, green: 0.42, blue: 0.81, alpha: 1)
-        case .disk: return NSColor(srgbRed: 0.42, green: 0.59, blue: 0.17, alpha: 1)
-        case .network: return NSColor(srgbRed: 0.69, green: 0.34, blue: 0.49, alpha: 1)
-        case .gpu: return NSColor(srgbRed: 0.57, green: 0.33, blue: 0.77, alpha: 1)
+        case .cpu: return NSColor(srgbRed: 0.48, green: 0.64, blue: 0.70, alpha: 1)
+        case .memory: return NSColor(srgbRed: 0.38, green: 0.59, blue: 0.85, alpha: 1)
+        case .disk: return NSColor(srgbRed: 0.61, green: 0.72, blue: 0.45, alpha: 1)
+        case .network: return NSColor(srgbRed: 0.77, green: 0.53, blue: 0.62, alpha: 1)
+        case .gpu: return NSColor(srgbRed: 0.67, green: 0.48, blue: 0.86, alpha: 1)
         }
     }
 }
@@ -36,12 +47,14 @@ struct ChartPoint {
 @MainActor final class ChartView: FlippedView {
     var points: [ChartPoint] = []
     var color = Style.color(.cpu)
+    var kind: HardwareKind = .cpu
     var ceiling: Double = 100
     var stacked = false
     var compact = false
     var coreIndex: Int?
     var onMode: ((Bool) -> Void)?
     var logical = false
+    var unavailable: String?
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         setAccessibilityElement(true); setAccessibilityRole(.image)
@@ -63,12 +76,13 @@ struct ChartPoint {
         let rect = bounds.insetBy(dx: 0.5, dy: 0.5)
         let grid = NSBezierPath(); grid.lineWidth = 0.5
         if !compact {
-            for i in 1..<10 {
-                let x = rect.minX + rect.width * CGFloat(i) / 10
+            let columns = coreIndex == nil ? max(10, Int(rect.width / 30)) : 10
+            for i in 1..<columns {
+                let x = rect.minX + rect.width * CGFloat(i) / CGFloat(columns)
                 grid.move(to: NSPoint(x: x, y: rect.minY)); grid.line(to: NSPoint(x: x, y: rect.maxY))
             }
-            for i in 1..<5 {
-                let y = rect.minY + rect.height * CGFloat(i) / 5
+            for i in 1..<10 {
+                let y = rect.minY + rect.height * CGFloat(i) / 10
                 grid.move(to: NSPoint(x: rect.minX, y: y)); grid.line(to: NSPoint(x: rect.maxX, y: y))
             }
             Style.grid.setStroke(); grid.stroke()
@@ -83,9 +97,9 @@ struct ChartPoint {
                     let area = line.copy() as! NSBezierPath
                     area.line(to: NSPoint(x: run.last!.x, y: rect.maxY))
                     area.line(to: NSPoint(x: run[0].x, y: rect.maxY)); area.close()
-                    color.withAlphaComponent(alpha).setFill(); area.fill()
+                    (secondary ? color.withAlphaComponent(alpha) : Style.fill(kind)).setFill(); area.fill()
                 }
-                color.withAlphaComponent(secondary ? 0.85 : 1).setStroke(); line.lineWidth = compact ? 1 : 1.35
+                color.withAlphaComponent(secondary ? 0.8 : 1).setStroke(); line.lineWidth = compact ? 0.65 : 0.7
                 if dash { line.setLineDash([4, 3], count: 2, phase: 0) }
                 line.stroke(); run.removeAll(keepingCapacity: true)
             }
@@ -102,12 +116,15 @@ struct ChartPoint {
             }
             finish()
         }
-        render(secondary: false, fill: true, alpha: Style.dark ? 0.20 : 0.16)
-        render(secondary: true, fill: stacked, alpha: Style.dark ? 0.52 : 0.38, dash: !stacked)
-        color.withAlphaComponent(0.6).setStroke(); NSBezierPath(rect: rect).stroke()
-        if let coreIndex {
-            let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 10), .foregroundColor: NSColor.secondaryLabelColor]
-            ("CPU \(coreIndex)" as NSString).draw(at: NSPoint(x: 5, y: 3), withAttributes: attrs)
+        if unavailable == nil {
+            render(secondary: false, fill: true, alpha: 1)
+            render(secondary: true, fill: stacked, alpha: Style.dark ? 0.48 : 0.32, dash: !stacked)
+        }
+        Style.border.setStroke(); let border = NSBezierPath(rect: rect); border.lineWidth = 0.7; border.stroke()
+        if let unavailable {
+            let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 12), .foregroundColor: NSColor.tertiaryLabelColor]
+            let text = unavailable as NSString; let size = text.size(withAttributes: attrs)
+            text.draw(at: NSPoint(x: (bounds.width - size.width) / 2, y: (bounds.height - size.height) / 2), withAttributes: attrs)
         }
     }
 }
@@ -115,14 +132,14 @@ struct ChartPoint {
 @MainActor final class HardwareRow: NSButton {
     let device: HardwareDevice
     let chart = ChartView()
-    let nameLabel = label(size: 13)
-    let subtitle = label(size: 11, secondary: true)
+    let nameLabel = label(size: 18)
+    let subtitle = label(size: 13, secondary: true)
     var selected = false
     init(device: HardwareDevice) {
         self.device = device
         super.init(frame: .zero)
         isBordered = false; title = ""; focusRingType = .none
-        chart.compact = true; chart.color = Style.color(device.kind)
+        chart.compact = true; chart.kind = device.kind; chart.color = Style.color(device.kind)
         chart.setAccessibilityElement(false)
         addSubview(chart); addSubview(nameLabel); addSubview(subtitle)
     }
@@ -131,15 +148,14 @@ struct ChartPoint {
     override func hitTest(_ point: NSPoint) -> NSView? { bounds.contains(convert(point, from: superview)) ? self : nil }
     override func layout() {
         super.layout()
-        chart.frame = NSRect(x: 12, y: 14, width: 62, height: 39)
-        nameLabel.frame = NSRect(x: 86, y: 11, width: bounds.width - 92, height: 20)
-        subtitle.frame = NSRect(x: 86, y: 32, width: bounds.width - 92, height: 28)
+        chart.frame = NSRect(x: 10, y: 11, width: 66, height: 48)
+        nameLabel.frame = NSRect(x: 90, y: 5, width: bounds.width - 94, height: 24)
+        subtitle.frame = NSRect(x: 90, y: 29, width: bounds.width - 94, height: 35)
         subtitle.maximumNumberOfLines = 2
     }
     override func draw(_ dirtyRect: NSRect) {
-        (selected ? Style.selected : Style.sidebar).setFill()
-        NSBezierPath(roundedRect: bounds.insetBy(dx: 3, dy: 2), xRadius: 4, yRadius: 4).fill()
-        if selected { Style.color(device.kind).setFill(); NSBezierPath(roundedRect: NSRect(x: 3, y: 17, width: 3, height: 34), xRadius: 1.5, yRadius: 1.5).fill() }
+        (selected ? Style.selected : Style.surface).setFill()
+        bounds.fill()
     }
 }
 
@@ -147,8 +163,13 @@ struct ChartPoint {
     switch device.kind {
     case .cpu: return "CPU"
     case .memory: return tr("内存", "Memory")
-    case .disk: return tr("磁盘", "Disk") + " " + device.name
-    case .network: return device.model == "Ethernet" ? tr("以太网", "Ethernet") : device.model
+    case .disk:
+        let index = device.metadata["index"] ?? "0"
+        let mount = device.metadata["system"] == "true" ? " (/)" : ""
+        return tr("磁盘", "Disk") + " " + index + mount
+    case .network:
+        let type = device.metadata["type"] ?? device.model
+        return type == "Wi-Fi" ? "Wi-Fi" : tr("以太网", "Ethernet")
     case .gpu: return device.name
     }
 }
