@@ -1,8 +1,47 @@
 import Foundation
+import AppKit
 import Testing
 @testable import SparkMonitor
 
 struct ModelTests {
+    @Test @MainActor func hardwareOrderAndVisibilityPersist() throws {
+        let host = HostState(HostProfile(name: "Example", host: "example.test", username: "demo"))
+        host.inventory = HardwareInventory(hostname: "Example", devices: [
+            HardwareDevice(id: "cpu", kind: .cpu, name: "CPU", model: "GB10", defaultVisible: true, metadata: [:]),
+            HardwareDevice(id: "memory", kind: .memory, name: "Memory", model: "LPDDR5X", defaultVisible: true, metadata: [:]),
+            HardwareDevice(id: "gpu", kind: .gpu, name: "GPU", model: "GB10", defaultVisible: true, metadata: [:])
+        ])
+        host.moveDevice("gpu", to: 0)
+        host.setVisible(false, device: host.inventory!.devices[1])
+        let restored = HostState(try JSONDecoder().decode(HostProfile.self, from: JSONEncoder().encode(host.profile)))
+        restored.inventory = host.inventory
+        #expect(restored.visibleDevices.map(\.id) == ["gpu", "cpu"])
+        #expect(restored.editableDevices.map(\.id) == ["gpu", "cpu", "memory"])
+        restored.setVisible(true, device: host.inventory!.devices[1])
+        #expect(restored.visibleDevices.count == 3)
+    }
+    @Test @MainActor func gpuRefreshPreservesScrollAndResizesCharts() {
+        _ = NSApplication.shared
+        let host = HostState(HostProfile(name: "Example", host: "example.test", username: "demo", selectedDevice: "gpu"))
+        host.inventory = HardwareInventory(hostname: "Example", devices: [
+            HardwareDevice(id: "gpu", kind: .gpu, name: "GPU", model: "GB10", defaultVisible: true, metadata: [:])
+        ])
+        let pane = PerformancePane(state: host)
+        pane.frame = NSRect(x: 0, y: 0, width: 872, height: 480)
+        pane.layoutSubtreeIfNeeded()
+        pane.detailScroll.contentView.scroll(to: NSPoint(x: 0, y: 80))
+        let before = pane.detailScroll.contentView.bounds.origin.y
+        let field = pane.details.first!.0
+        let graphHeight = pane.charts[0].frame.height
+        #expect(before > 0)
+        pane.refresh(); pane.layoutSubtreeIfNeeded()
+        #expect(pane.detailScroll.contentView.bounds.origin.y == before)
+        #expect(pane.details.first!.0 === field)
+        pane.frame.size.height = 1000; pane.layoutSubtreeIfNeeded()
+        #expect(pane.charts.count == 5)
+        #expect(pane.charts[0].frame.height > graphHeight)
+        #expect(pane.details.allSatisfy { $0.0.frame.maxY <= pane.content.bounds.height })
+    }
     @Test func adaptiveSelectionPreservesFocus() {
         let ids = (0..<4).map { _ in UUID() }
         var panes = PaneSelection()

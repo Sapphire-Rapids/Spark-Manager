@@ -26,7 +26,7 @@ def numeric(text):
 
 def command(args):
     try:
-        p = subprocess.run(args, capture_output=True, text=True, timeout=3)
+        p = subprocess.run(args, capture_output=True, text=True, timeout=3, env={**os.environ, 'LC_ALL': 'C'})
     except subprocess.TimeoutExpired:
         return None
     return p.stdout if p.returncode == 0 else None
@@ -99,6 +99,32 @@ def disk_mounts(name):
     return list(found.values())
 
 
+def network_metadata():
+    raw = command(['nmcli', '-t', '-m', 'multiline', '--escape', 'no', '-f',
+                   'GENERAL.DEVICE,IP4.DNS,IP6.DNS,IP4.DOMAIN,IP6.DOMAIN,IP4.GATEWAY', 'device', 'show']) or ''
+    result = {}; current = None
+    for line in raw.splitlines():
+        key, sep, value = line.partition(':')
+        if not sep: continue
+        value = value.strip()
+        if key == 'GENERAL.DEVICE':
+            current = result.setdefault(value, {})
+        elif current is not None and value and value != '--':
+            field = 'dns' if '.DNS' in key else 'domain' if '.DOMAIN' in key else 'gateway'
+            current[field] = ', '.join(filter(None, [current.get(field), value]))
+    return result
+
+
+def parse_wifi_link(raw):
+    # Split only the first colon: SSIDs and BSSIDs may themselves contain colons.
+    return {key.strip(): value.strip() for line in raw.splitlines()
+            for key, sep, value in [line.partition(':')] if sep}
+
+
+def wifi_link(name):
+    return parse_wifi_link(command(['iw', 'dev', name, 'link']) or '')
+
+
 def inventory():
     mem = memory()
     cores = sorted(Path('/sys/devices/system/cpu').glob('cpu[0-9]*'))
@@ -113,6 +139,8 @@ def inventory():
             if size:
                 cache_sizes[(level, kind, shared)] = int(size[1]) * (1024 ** ('KMG'.index(size[2]) + 1))
     cpu_meta = {'cores': str(len(cores)), 'architecture': os.uname().machine, 'sockets': str(len(sockets)) if sockets else ''}
+    max_frequencies = [v / 1000 for p in cores if (v := numeric(read(p / 'cpufreq/cpuinfo_max_freq'))) is not None]
+    if max_frequencies: cpu_meta['maxFrequency'] = str(max(max_frequencies))
     for level in ['1', '2', '3']:
         total = sum(v for (l, _, _), v in cache_sizes.items() if l == level)
         if total: cpu_meta['cacheL' + level] = str(total)
@@ -133,6 +161,7 @@ def inventory():
                                       'capacity': str(int(read(disk / 'size') or 0) * 512)}))
         disk_index += 1
     address_data = json.loads(command(['ip', '-j', 'addr']) or '[]')
+    network_details = network_metadata()
     for net in sorted(Path('/sys/class/net').iterdir()):
         if net.name == 'lo':
             continue
@@ -142,7 +171,15 @@ def inventory():
         meta = {'interface': net.name, 'type': kind if physical else 'Virtual',
                 'address': ', '.join(a['local'] for a in addresses if a.get('scope') == 'global')}
         meta['ipv4'] = ', '.join(a['local'] for a in addresses if a.get('family') == 'inet')
-        meta['ipv6'] = ', '.join(a['local'] for a in addresses if a.get('family') == 'inet6' and a.get('scope') == 'global')
+        meta['ipv6'] = ', '.join(a['local'] for a in addresses if a.get('family') == 'inet6')
+        meta.update(network_details.get(net.name, {}))
+        meta['mac'] = read(net / 'address') or ''
+        meta['duplex'] = read(net / 'duplex') or ''
+        if kind == 'Wi-Fi':
+            link = wifi_link(net.name)
+            meta['ssid'] = link.get('SSID', '')
+            bitrates = link.get('rx bitrate', '') + ' ' + link.get('tx bitrate', '')
+            meta['protocol'] = next((version for marker, version in [('EHT-', '802.11be'), ('HE-', '802.11ax'), ('VHT-', '802.11ac'), ('MCS', '802.11n')] if marker in bitrates), 'Wi-Fi')
         driver = (net / 'device/driver').resolve().name if physical else ''
         adapter_model = {'mlx5_core': 'NVIDIA ConnectX-7', 'mt7925e': 'MediaTek Wi-Fi 7 MT7925', 'r8127': 'Realtek RTL8127'}.get(driver, meta['type'])
         rdma = []
@@ -153,11 +190,11 @@ def inventory():
         meta['rdma_ports'] = json.dumps(rdma)
         devices.append(dict(id='net:' + net.name, kind='network', name=net.name, model=adapter_model,
                             defaultVisible=physical and read(net / 'operstate') == 'up', metadata=meta))
-    raw = command(['nvidia-smi', '--query-gpu=index,uuid,name,driver_version', '--format=csv,noheader,nounits'])
+    raw = command(['nvidia-smi', '--query-gpu=index,uuid,name,driver_version,pci.bus_id', '--format=csv,noheader,nounits'])
     for row in csv.reader((raw or '').splitlines()):
-        index, uid, model, driver = [x.strip() for x in row]
+        index, uid, model, driver, pci = [x.strip() for x in row]
         devices.append(dict(id='gpu:' + uid, kind='gpu', name='GPU ' + index, model=model, defaultVisible=True,
-                            metadata={'index': index, 'driver': driver}))
+                            metadata={'index': index, 'driver': driver, 'pci': pci}))
     return {'hostname': os.uname().nodename, 'devices': devices}
 
 
@@ -193,7 +230,9 @@ def sample(inv, previous):
                           'usage': (mem['MemTotal'] - mem['MemAvailable']) * 100 / mem['MemTotal'],
                           'cached': mem.get('Cached', 0) + mem.get('SReclaimable', 0),
                           'committed': mem.get('Committed_AS'), 'commitLimit': mem.get('CommitLimit'),
-                          'swapTotal': mem['SwapTotal'], 'swapUsed': mem['SwapTotal'] - mem['SwapFree']}}}
+                          'swapTotal': mem['SwapTotal'], 'swapUsed': mem['SwapTotal'] - mem['SwapFree'],
+                          'slab': mem.get('Slab'), 'reclaimable': mem.get('SReclaimable'),
+                          'shared': mem.get('Shmem'), 'dirty': mem.get('Dirty')}}}
     for dev in inv['devices']:
         meta = dev['metadata']
         if dev['kind'] == 'disk':
@@ -226,6 +265,11 @@ def sample(inv, previous):
                     'received': cur[0], 'sent': cur[8], 'errors': cur[2] + cur[10], 'drops': cur[3] + cur[11],
                     'linkSpeed': speed if speed is not None and speed > 0 else None,
                     'up': 1 if read(Path('/sys/class/net') / name / 'operstate') == 'up' else 0}
+            if meta['type'] == 'Wi-Fi':
+                link = wifi_link(name)
+                for field, source in [('signal', 'signal'), ('rxSpeed', 'rx bitrate'), ('txSpeed', 'tx bitrate'), ('radioFrequency', 'freq')]:
+                    value = link.get(source, '').split()
+                    vals[field] = numeric(value[0]) if value else None
             ports = json.loads(meta['rdma_ports'])
             if ports:
                 for field, source in [('rdmaSent', 'port_xmit_data'), ('rdmaReceived', 'port_rcv_data')]:

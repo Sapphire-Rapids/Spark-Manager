@@ -6,14 +6,15 @@ import Foundation
         for i in 1...3 {
             let state = HostState(HostProfile(name: "Spark 0\(i)", host: "spark-0\(i).example", username: "demo"))
             state.inventory = HardwareInventory(hostname: state.profile.name, devices: [
-                HardwareDevice(id: "cpu", kind: .cpu, name: "CPU", model: "NVIDIA GB10", defaultVisible: true, metadata: ["cores": "20", "architecture": "aarch64", "sockets": "1", "cacheL1": "3932160", "cacheL2": "20971520", "cacheL3": "25165824"]),
+                HardwareDevice(id: "cpu", kind: .cpu, name: "CPU", model: "NVIDIA GB10", defaultVisible: true, metadata: ["cores": "20", "architecture": "aarch64", "sockets": "1", "cacheL1": "3932160", "cacheL2": "20971520", "cacheL3": "25165824", "maxFrequency": "3900"]),
                 HardwareDevice(id: "memory", kind: .memory, name: "Memory", model: "LPDDR5X", defaultVisible: true, metadata: [:]),
                 HardwareDevice(id: "disk:demo", kind: .disk, name: "0 (NVMe)", model: "4 TB NVMe SSD", defaultVisible: true, metadata: ["index": "0", "system": "true", "type": "SSD (NVMe)"]),
-                HardwareDevice(id: "net:demo", kind: .network, name: "ethernet0", model: "MediaTek Wi-Fi 7 MT7925", defaultVisible: true, metadata: ["type": "Wi-Fi", "rdma_ports": "[]", "ipv4": "192.0.2.10"]),
-                HardwareDevice(id: "net:rdma", kind: .network, name: "fabric0", model: "Ethernet", defaultVisible: true, metadata: ["rdma_ports": "[demo]", "address": "198.51.100.10"]),
-                HardwareDevice(id: "gpu:demo", kind: .gpu, name: "GPU 0", model: "NVIDIA GB10", defaultVisible: true, metadata: ["driver": "580 (demo)"])
+                HardwareDevice(id: "net:demo", kind: .network, name: "wifi0", model: "MediaTek Wi-Fi 7 MT7925", defaultVisible: true, metadata: ["type": "Wi-Fi", "rdma_ports": "[]", "ipv4": "192.0.2.10", "interface": "wifi0", "ssid": "Spark Demo", "protocol": "802.11be", "domain": "example", "dns": "192.0.2.1", "mac": "02:00:00:00:00:01", "ipv6": "2001:db8::10"]),
+                HardwareDevice(id: "net:rdma", kind: .network, name: "fabric0", model: "Ethernet", defaultVisible: true, metadata: ["rdma_ports": "[demo]", "type": "Ethernet", "ipv4": "198.51.100.10", "mac": "02:00:00:00:00:02", "duplex": "full"]),
+                HardwareDevice(id: "net:hidden", kind: .network, name: "docker0", model: "Virtual", defaultVisible: false, metadata: ["type": "Virtual", "rdma_ports": "[]"]),
+                HardwareDevice(id: "gpu:demo", kind: .gpu, name: "GPU 0", model: "NVIDIA GB10", defaultVisible: true, metadata: ["driver": "580 (demo)", "pci": "000f:01:00.0"])
             ])
-            for age in (0..<60).reversed() {
+            for age in (0...60).reversed() {
                 let date = Date().addingTimeInterval(-Double(age))
                 state.history.append(HistoryPoint(received: date, snapshot: demoSnapshot(time: date.timeIntervalSince1970, offset: i)))
             }
@@ -35,9 +36,9 @@ import Foundation
             "cpu": DeviceMetrics(values: ["usage": busy, "user": busy - 8, "system": 8, "frequency": 3280, "temperature": 68.5, "load": 7.8, "processes": 348, "threads": 2920],
                                  cores: cores,
                                  sensors: ["TS0E": 56.2, "TS0P": 67.1, "TS1E": 57.5, "TS1P": 68.5]),
-            "memory": DeviceMetrics(values: ["usage": 58, "used": 70.5 * gib, "total": 121.6 * gib, "available": 51.1 * gib, "cached": 12.4 * gib, "swapUsed": 0, "swapTotal": 16 * gib, "committed": 72 * gib, "commitLimit": 132 * gib]),
+            "memory": DeviceMetrics(values: ["usage": 58, "used": 70.5 * gib, "total": 121.6 * gib, "available": 51.1 * gib, "cached": 12.4 * gib, "swapUsed": 0, "swapTotal": 16 * gib, "committed": 72 * gib, "commitLimit": 132 * gib, "slab": 1.2 * gib, "reclaimable": 0.6 * gib, "shared": 0.2 * gib, "dirty": 8_000_000]),
             "disk:demo": DeviceMetrics(values: ["usage": busy / 3, "read": busy * 1_000_000, "write": 3_000_000, "temperature": 44, "latency": 1.3, "capacity": 4_000_000_000_000, "total": 3.75e12, "free": 2.5e12]),
-            "net:demo": DeviceMetrics(values: ["receive": busy * 100_000, "send": busy * 30_000, "received": 2e9, "sent": 1e9, "linkSpeed": 10_000, "up": 1, "errors": 0, "drops": 0]),
+            "net:demo": DeviceMetrics(values: ["receive": busy * 100_000, "send": busy * 30_000, "received": 2e9, "sent": 1e9, "signal": -48, "rxSpeed": 1200, "txSpeed": 960, "radioFrequency": 5955, "linkSpeed": 10_000, "up": 1, "errors": 0, "drops": 0]),
             "net:rdma": DeviceMetrics(values: ["receive": busy * 10_000_000, "send": busy * 8_000_000, "received": 2e11, "sent": 1e11, "linkSpeed": 200_000, "up": 1, "errors": 0, "drops": 0, "rdmaSent": 1e11, "rdmaReceived": 2e11]),
             "gpu:demo": DeviceMetrics(values: ["usage": busy + 18, "temperature": 58, "power": 38.4, "frequency": 2483, "memoryActivity": 12, "encoder": 0, "decoder": 0])
         ])

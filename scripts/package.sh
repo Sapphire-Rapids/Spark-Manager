@@ -4,9 +4,9 @@ cd "$(dirname "$0")/.."
 configuration="${CONFIGURATION:-release}"
 swift build -c "$configuration"
 bin_dir="$(swift build -c "$configuration" --show-bin-path)"
-app_dir="$PWD/dist/Spark Monitor.app"
+app_dir="$PWD/dist/Spark Manager.app"
 mkdir -p "$app_dir/Contents/MacOS" "$app_dir/Contents/Resources"
-cp "$bin_dir/SparkMonitor" "$app_dir/Contents/MacOS/SparkMonitor"
+cp "$bin_dir/SparkManager" "$app_dir/Contents/MacOS/SparkManager"
 cp Sources/SparkMonitor/Resources/collector.py "$app_dir/Contents/Resources/collector.py"
 cp LICENSE docs/THIRD_PARTY.md "$app_dir/Contents/Resources/"
 swift scripts/icon.swift "$PWD/dist/AppIcon.iconset"
@@ -15,18 +15,18 @@ cat > "$app_dir/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-<key>CFBundleExecutable</key><string>SparkMonitor</string>
+<key>CFBundleExecutable</key><string>SparkManager</string>
 <key>CFBundleIdentifier</key><string>org.sparkmonitor.native.preview</string>
-<key>CFBundleName</key><string>Spark Monitor</string>
-<key>CFBundleDisplayName</key><string>Spark Monitor</string>
+<key>CFBundleName</key><string>Spark Manager</string>
+<key>CFBundleDisplayName</key><string>Spark Manager</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>0.2.0</string>
-<key>CFBundleVersion</key><string>2</string>
+<key>CFBundleShortVersionString</key><string>0.3.0</string>
+<key>CFBundleVersion</key><string>3</string>
 <key>CFBundleIconFile</key><string>AppIcon</string>
 <key>LSMinimumSystemVersion</key><string>14.0</string>
 <key>NSHighResolutionCapable</key><true/>
 </dict></plist>
 PLIST
 codesign --force --deep --sign - "$app_dir"
-ditto -c -k --sequesterRsrc --keepParent "$app_dir" "$PWD/dist/Spark-Monitor-macOS-arm64.zip"
+ditto -c -k --sequesterRsrc --keepParent "$app_dir" "$PWD/dist/Spark-Manager-macOS-arm64.zip"
 printf '%s\n' "$app_dir"

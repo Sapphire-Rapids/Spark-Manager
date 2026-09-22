@@ -62,28 +62,4 @@ import AppKit
         if state == nil { model.hosts.append(target); model.panes.select(profile.id) }
         model.save(); model.connect(target); refresh()
     }
-    func editHardware(_ state: HostState) {
-        guard let inventory = state.inventory else { return }
-        let alert = NSAlert(); alert.messageText = tr("编辑硬件列表", "Edit hardware list")
-        alert.informativeText = tr("选择要显示的真实设备。取消选择只隐藏条目。", "Choose the detected devices to display. Unchecking only hides a row.")
-        alert.addButton(withTitle: tr("完成", "Done")); alert.addButton(withTitle: tr("取消", "Cancel"))
-        let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 440, height: min(380, CGFloat(inventory.devices.count) * 32)))
-        scroll.hasVerticalScroller = true; scroll.drawsBackground = false
-        let content = FlippedView(frame: NSRect(x: 0, y: 0, width: 420, height: CGFloat(inventory.devices.count) * 32))
-        scroll.documentView = content
-        var checks: [NSButton] = []
-        for (index, device) in inventory.devices.enumerated() {
-            let button = NSButton(checkboxWithTitle: deviceTitle(device) + " — " + device.model + (device.kind == .network ? " (\(device.name))" : ""), target: nil, action: nil)
-            button.frame = NSRect(x: 3, y: CGFloat(index) * 32, width: 410, height: 28)
-            button.state = state.visibleDevices.contains(where: { $0.id == device.id }) ? .on : .off
-            content.addSubview(button); checks.append(button)
-        }
-        alert.accessoryView = scroll
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        for (index, device) in inventory.devices.enumerated() {
-            if checks[index].state == .on { state.profile.hiddenDevices.remove(device.id); state.profile.addedDevices.insert(device.id) }
-            else { state.profile.hiddenDevices.insert(device.id); state.profile.addedDevices.remove(device.id) }
-        }
-        model.save(); refresh()
-    }
 }

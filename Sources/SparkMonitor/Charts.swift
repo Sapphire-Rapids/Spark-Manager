@@ -87,7 +87,11 @@ struct ChartPoint {
             }
             Style.grid.setStroke(); grid.stroke()
         }
-        let now = Date()
+        // Advance the graph only when a sample arrives. Redraws and resizing must
+        // not move the newest point away from the right border.
+        let end = points.last?.time ?? Date()
+        NSGraphicsContext.saveGraphicsState()
+        NSBezierPath(rect: rect).addClip()
         func render(secondary: Bool, fill: Bool, alpha: CGFloat, dash: Bool = false) {
             var run: [NSPoint] = []; var lastDate: Date?
             func finish() {
@@ -108,9 +112,10 @@ struct ChartPoint {
                 if let lastDate, sample.time.timeIntervalSince(lastDate) > 3 { finish() }
                 lastDate = sample.time
                 guard let value, value.isFinite else { finish(); continue }
-                let age = now.timeIntervalSince(sample.time)
-                guard age <= 60 else { continue }
-                let x = rect.maxX - CGFloat(max(0, age) / 60) * rect.width
+                let age = end.timeIntervalSince(sample.time)
+                // The retained point before -60s is clipped at the frame, so
+                // the line and fill meet the left border without a moving gap.
+                let x = rect.maxX - CGFloat(age / 60) * rect.width
                 let y = rect.maxY - CGFloat(max(0, min(ceiling, value)) / max(1, ceiling)) * rect.height
                 run.append(NSPoint(x: x, y: y))
             }
@@ -120,6 +125,7 @@ struct ChartPoint {
             render(secondary: false, fill: true, alpha: 1)
             render(secondary: true, fill: stacked, alpha: Style.dark ? 0.48 : 0.32, dash: !stacked)
         }
+        NSGraphicsContext.restoreGraphicsState()
         Style.border.setStroke(); let border = NSBezierPath(rect: rect); border.lineWidth = 0.7; border.stroke()
         if let unavailable {
             let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 12), .foregroundColor: NSColor.tertiaryLabelColor]
@@ -129,33 +135,95 @@ struct ChartPoint {
     }
 }
 
-@MainActor final class HardwareRow: NSButton {
-    let device: HardwareDevice
+@MainActor final class HardwareRow: NSButton, NSDraggingSource {
+    var device: HardwareDevice
     let chart = ChartView()
     let nameLabel = label(size: 18)
     let subtitle = label(size: 13, secondary: true)
+    let checkbox = NSButton(checkboxWithTitle: "", target: nil, action: nil)
     var selected = false
+    var editing = false
+    var visible = true
+    var onToggle: ((Bool) -> Void)?
+    static let pasteboardType = NSPasteboard.PasteboardType("org.sparkmanager.hardware")
     init(device: HardwareDevice) {
         self.device = device
         super.init(frame: .zero)
         isBordered = false; title = ""; focusRingType = .none
         chart.compact = true; chart.kind = device.kind; chart.color = Style.color(device.kind)
         chart.setAccessibilityElement(false)
-        addSubview(chart); addSubview(nameLabel); addSubview(subtitle)
+        addSubview(chart); addSubview(nameLabel); addSubview(subtitle); addSubview(checkbox)
+        checkbox.target = self; checkbox.action = #selector(toggleVisibility)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override var isFlipped: Bool { true }
-    override func hitTest(_ point: NSPoint) -> NSView? { bounds.contains(convert(point, from: superview)) ? self : nil }
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let local = convert(point, from: superview)
+        guard bounds.contains(local) else { return nil }
+        return editing && checkbox.frame.contains(local) ? checkbox : self
+    }
+    @objc func toggleVisibility() { onToggle?(checkbox.state == .on) }
+    override func mouseDown(with event: NSEvent) {
+        guard editing else { super.mouseDown(with: event); return }
+        while let next = window?.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) {
+            if next.type == .leftMouseUp { return }
+            guard hypot(next.locationInWindow.x - event.locationInWindow.x, next.locationInWindow.y - event.locationInWindow.y) > 4 else { continue }
+            let item = NSPasteboardItem(); item.setString(device.id, forType: Self.pasteboardType)
+            let dragging = NSDraggingItem(pasteboardWriter: item)
+            let image = NSImage(size: bounds.size)
+            image.lockFocus(); Style.selected.setFill(); bounds.fill()
+            (nameLabel.stringValue as NSString).draw(at: NSPoint(x: 12, y: 25), withAttributes: [.font: NSFont.systemFont(ofSize: 18), .foregroundColor: NSColor.labelColor])
+            image.unlockFocus()
+            dragging.setDraggingFrame(bounds, contents: image)
+            beginDraggingSession(with: [dragging], event: event, source: self)
+            return
+        }
+    }
+    func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation { context == .withinApplication ? .move : [] }
     override func layout() {
         super.layout()
         chart.frame = NSRect(x: 10, y: 11, width: 66, height: 48)
-        nameLabel.frame = NSRect(x: 90, y: 5, width: bounds.width - 94, height: 24)
-        subtitle.frame = NSRect(x: 90, y: 29, width: bounds.width - 94, height: 35)
+        let textWidth = bounds.width - (editing ? 124 : 94)
+        nameLabel.frame = NSRect(x: 90, y: 5, width: textWidth, height: 24)
+        subtitle.frame = NSRect(x: 90, y: 29, width: textWidth, height: 35)
         subtitle.maximumNumberOfLines = 2
+        checkbox.isHidden = !editing; checkbox.state = visible ? .on : .off
+        checkbox.frame = NSRect(x: bounds.width - 27, y: 25, width: 21, height: 22)
+        checkbox.setAccessibilityLabel(tr("显示", "Show") + " " + deviceTitle(device) + " " + device.name)
+        for view in [chart, nameLabel, subtitle] { view.alphaValue = editing ? (visible ? 0.75 : 0.32) : 1 }
     }
     override func draw(_ dirtyRect: NSRect) {
-        (selected ? Style.selected : Style.surface).setFill()
+        ((editing ? visible : selected) ? Style.selected : Style.surface).setFill()
         bounds.fill()
+    }
+}
+
+@MainActor final class HardwareListView: FlippedView {
+    var editing = false
+    var rowCount = 0
+    var insertion: Int?
+    var onMove: ((String, Int) -> Void)?
+    override init(frame: NSRect) {
+        super.init(frame: frame); registerForDraggedTypes([HardwareRow.pasteboardType])
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation { draggingUpdated(sender) }
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        guard editing, let row = sender.draggingSource as? HardwareRow, row.superview === self else { return [] }
+        if let event = NSApp.currentEvent { autoscroll(with: event) }
+        insertion = min(rowCount, max(0, Int((convert(sender.draggingLocation, from: nil).y + 36) / 72)))
+        needsDisplay = true; return .move
+    }
+    override func draggingExited(_ sender: NSDraggingInfo?) { insertion = nil; needsDisplay = true }
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        guard let insertion, let row = sender.draggingSource as? HardwareRow, row.superview === self else { return false }
+        self.insertion = nil; needsDisplay = true; onMove?(row.device.id, insertion); return true
+    }
+    override func draw(_ dirtyRect: NSRect) {
+        if let insertion {
+            NSColor.controlAccentColor.setFill()
+            NSRect(x: 2, y: max(0, CGFloat(insertion) * 72 - 2), width: bounds.width - 4, height: 2).fill()
+        }
     }
 }
 
@@ -165,8 +233,7 @@ struct ChartPoint {
     case .memory: return tr("内存", "Memory")
     case .disk:
         let index = device.metadata["index"] ?? "0"
-        let mount = device.metadata["system"] == "true" ? " (/)" : ""
-        return tr("磁盘", "Disk") + " " + index + mount
+        return tr("磁盘", "Disk") + " " + index
     case .network:
         let type = device.metadata["type"] ?? device.model
         return type == "Wi-Fi" ? "Wi-Fi" : tr("以太网", "Ethernet")

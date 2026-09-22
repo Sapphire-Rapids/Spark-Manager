@@ -11,13 +11,13 @@ import AppKit
         if CommandLine.arguments.contains("--dark") { model.preferences.theme = "dark" }
         if CommandLine.arguments.contains("--light") { model.preferences.theme = "light" }
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1280, height: 720), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
-        window.title = "Spark Monitor"
+        window.title = tr("DGX Spark管理器", "Spark Manager")
         window.minSize = NSSize(width: 920, height: 740)
         window.isReleasedWhenClosed = false
         dashboard = DashboardView(frame: NSRect(x: 0, y: 0, width: 1280, height: 720))
         window.contentView = dashboard
         let appMenu = NSMenu(); let appItem = NSMenuItem(); appMenu.addItem(appItem)
-        let menu = NSMenu(); menu.addItem(withTitle: "Quit Spark Monitor", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        let menu = NSMenu(); menu.addItem(withTitle: "Quit Spark Manager", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         appItem.submenu = menu
         let edit = NSMenuItem(title: "Edit", action: nil, keyEquivalent: ""); let editMenu = NSMenu(title: "Edit")
         for (name, action, key) in [("Copy", #selector(NSText.copy(_:)), "c"), ("Paste", #selector(NSText.paste(_:)), "v"), ("Select All", #selector(NSText.selectAll(_:)), "a")] {

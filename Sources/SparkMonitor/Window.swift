@@ -69,6 +69,7 @@ import AppKit
         Style.grid.setFill(); NSRect(x: navigationWidth, y: 79, width: bounds.width - navigationWidth, height: 1).fill()
     }
     func refresh() {
+        window?.title = tr("DGX Spark管理器", "Spark Manager")
         heading.stringValue = model.demo ? tr("性能（演示数据）", "Performance (demo)") : tr("性能", "Performance")
         language.selectedSegment = model.preferences.language == "zh" ? 0 : 1
         add.title = tr("添加机器", "Add machine")
@@ -95,7 +96,6 @@ import AppKit
             if panels[id] == nil {
                 let panel = PerformancePane(state: state)
                 panel.onFocus = { [weak self] in self?.model.panes.focused = id; self?.refreshTabStates() }
-                panel.onEdit = { [weak self] in self?.editHardware(state) }
                 panel.onConnection = { [weak self] in self?.editHost(state) }
                 panels[id] = panel; addSubview(panel)
             }

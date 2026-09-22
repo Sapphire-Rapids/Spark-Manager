@@ -45,15 +45,35 @@ enum CredentialStore {
     init(_ profile: HostProfile) { self.profile = profile }
     var live: Bool { status == "connected" && (lastReceived.map { Date().timeIntervalSince($0) < 4 } ?? false) }
     var latest: MetricsSnapshot? { live ? history.last?.snapshot : nil }
-    var visibleDevices: [HardwareDevice] {
-        (inventory?.devices ?? []).filter { !profile.hiddenDevices.contains($0.id) && ($0.defaultVisible || profile.addedDevices.contains($0.id)) }
+    var orderedDevices: [HardwareDevice] {
+        let devices = inventory?.devices ?? []
+        let order = profile.deviceOrder ?? []
+        return order.compactMap { id in devices.first { $0.id == id } } + devices.filter { !order.contains($0.id) }
+    }
+    func isVisible(_ device: HardwareDevice) -> Bool {
+        !profile.hiddenDevices.contains(device.id) && (device.defaultVisible || profile.addedDevices.contains(device.id))
+    }
+    var visibleDevices: [HardwareDevice] { orderedDevices.filter(isVisible) }
+    var editableDevices: [HardwareDevice] { visibleDevices + orderedDevices.filter { !isVisible($0) } }
+    func setVisible(_ visible: Bool, device: HardwareDevice) {
+        if visible { profile.hiddenDevices.remove(device.id); profile.addedDevices.insert(device.id) }
+        else { profile.hiddenDevices.insert(device.id); profile.addedDevices.remove(device.id) }
+    }
+    func moveDevice(_ id: String, to insertion: Int) {
+        var ids = editableDevices.map(\.id)
+        guard let source = ids.firstIndex(of: id) else { return }
+        ids.remove(at: source)
+        ids.insert(id, at: min(ids.count, max(0, insertion - (source < insertion ? 1 : 0))))
+        profile.deviceOrder = ids
     }
     func append(_ snapshot: MetricsSnapshot) {
         let now = Date()
         if let lastReceived, now.timeIntervalSince(lastReceived) > 3 { history.append(HistoryPoint(received: lastReceived.addingTimeInterval(1), snapshot: nil)) }
         lastReceived = now
         history.append(HistoryPoint(received: now, snapshot: snapshot))
-        history.removeAll { now.timeIntervalSince($0.received) > 61 }
+        // Keep the sample just before the left edge for exact boundary clipping.
+        while history.count > 2 && (now.timeIntervalSince(history[1].received) > 60 ||
+            (now.timeIntervalSince(history[0].received) > 60 && history[1].received.timeIntervalSince(history[0].received) > 3)) { history.removeFirst() }
         status = "connected"; error = nil
     }
 }

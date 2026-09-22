@@ -6,7 +6,7 @@ import AppKit
     let modelLabel = label(size: 18)
     let hostLabel = label(size: 14)
     let sidebar = NSScrollView()
-    let rowContainer = FlippedView()
+    let rowContainer = HardwareListView()
     let detailScroll = NSScrollView()
     let content = FlippedView()
     let editButton = NSButton()
@@ -18,7 +18,8 @@ import AppKit
     var chartTimes: [NSTextField] = []
     var chartZeros: [NSTextField] = []
     var details: [(NSTextField, NSRect)] = []
-    var onEdit: (() -> Void)?
+    var editingHardware = false
+    var displayedDeviceID: String?
     var onConnection: (() -> Void)?
     var onFocus: (() -> Void)?
     var viewKey = ""
@@ -36,21 +37,31 @@ import AppKit
         modelLabel.alignment = .right
         editButton.isBordered = false; editButton.font = .systemFont(ofSize: 14); editButton.target = self; editButton.action = #selector(edit)
         addSubview(editButton)
+        rowContainer.onMove = { [weak self] id, index in
+            guard let self else { return }
+            state.moveDevice(id, to: index); AppModel.shared.save(); refresh()
+        }
         refresh()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-    @objc func edit() { onEdit?() }
+    @objc func edit() {
+        editingHardware.toggle(); onFocus?(); refresh()
+    }
     override func mouseDown(with event: NSEvent) { onFocus?() }
     override func draw(_ dirtyRect: NSRect) { Style.surface.setFill(); bounds.fill() }
     var selected: HardwareDevice? { state.visibleDevices.first { $0.id == state.profile.selectedDevice } ?? state.visibleDevices.first }
     func refresh() {
-        let devices = state.visibleDevices
-        let key = devices.map(\.id).joined(separator: "|") + (selected?.id ?? "") + String(state.profile.logicalCPU) + AppModel.shared.preferences.language
+        let devices = editingHardware ? state.editableDevices : state.visibleDevices
+        let key = devices.map(\.id).joined(separator: "|") + (selected?.id ?? "") + String(state.profile.logicalCPU) + String(editingHardware) + AppModel.shared.preferences.language
         if key != viewKey {
             viewKey = key
             rows.forEach { $0.removeFromSuperview() }; rows.removeAll()
             for device in devices {
                 let row = HardwareRow(device: device); row.target = self; row.action = #selector(selectRow(_:))
+                row.onToggle = { [weak self] checked in
+                    guard let self else { return }
+                    state.setVisible(checked, device: device); AppModel.shared.save(); refresh()
+                }
                 rowContainer.addSubview(row); rows.append(row)
             }
             charts.forEach { $0.removeFromSuperview() }; charts.removeAll()
@@ -58,7 +69,7 @@ import AppKit
             chartTitles = []; chartScales = []; chartTimes = []; chartZeros = []
             if let device = selected {
                 let cores = Int(device.metadata["cores"] ?? "20") ?? 20
-                let count = device.kind == .cpu && state.profile.logicalCPU ? cores : device.kind == .disk ? 2 : device.kind == .gpu ? 6 : 1
+                let count = device.kind == .cpu && state.profile.logicalCPU ? cores : device.kind == .disk ? 2 : device.kind == .gpu ? 5 : 1
                 for i in 0..<count {
                     let chart = ChartView(); chart.kind = device.kind; chart.color = Style.color(device.kind)
                     chart.stacked = device.kind == .cpu; chart.logical = state.profile.logicalCPU
@@ -78,11 +89,19 @@ import AppKit
                 }
             }
         }
+        if displayedDeviceID != selected?.id {
+            displayedDeviceID = selected?.id
+            detailScroll.contentView.scroll(to: .zero)
+        }
+        rowContainer.editing = editingHardware; rowContainer.rowCount = rows.count
         hostLabel.stringValue = state.profile.name
-        editButton.title = tr("编辑", "Edit")
+        editButton.title = editingHardware ? tr("完成", "Done") : tr("编辑", "Edit")
         titleLabel.stringValue = selected.map { $0.kind == .gpu ? "GPU" : deviceTitle($0) } ?? tr("性能", "Performance")
         modelLabel.stringValue = selected?.model ?? ""
-        for row in rows {
+        for (index, row) in rows.enumerated() {
+            row.device = devices[index]
+            row.editing = editingHardware; row.visible = state.isVisible(row.device); row.needsLayout = true
+            row.setAccessibilityElement(!editingHardware)
             let d = row.device, m = state.latest?.devices[d.id]
             row.selected = d.id == selected?.id
             row.nameLabel.stringValue = deviceTitle(d)
@@ -119,19 +138,22 @@ import AppKit
                 case .disk: caption = i == 0 ? tr("活动时间", "Active time") : tr("磁盘传输速率", "Disk transfer rate"); if i == 1 { key = "read"; second = "write" }
                 case .network: key = "receive"; second = "send"; caption = tr("吞吐量", "Throughput")
                 case .gpu:
-                    key = ["usage", "memoryActivity", "encoder", "decoder", "dedicatedUsed", "sharedUsed"][i]
-                    caption = ["GPU", tr("内存活动", "Memory activity"), "Video Encode", "Video Decode", tr("专用 GPU 内存", "Dedicated GPU memory"), tr("共享 GPU 内存", "Shared GPU memory")][i]
-                    if i >= 4 { chart.unavailable = tr("驱动未提供此指标", "Not reported by the driver") }
+                    key = ["usage", "memoryActivity", "encoder", "decoder", "used"][i]
+                    caption = [tr("总体利用率", "GPU utilization"), tr("内存读写活动", "Memory activity"), tr("视频编码", "Video Encode"), tr("视频解码", "Video Decode"), tr("统一内存", "Unified memory")][i]
                 }
-                chart.points = series(state, device: d, key: key, second: second, core: chart.coreIndex)
-                if d.kind == .memory { chart.ceiling = metric?.value("total") ?? Double(d.metadata["total"] ?? "") ?? 1 }
+                let chartDevice = d.kind == .gpu && i == 4 ? state.inventory?.devices.first { $0.kind == .memory } : d
+                let chartMetric = chartDevice.flatMap { state.latest?.devices[$0.id] }
+                chart.points = chartDevice.map { series(state, device: $0, key: key, second: second, core: chart.coreIndex) } ?? []
+                let memoryChart = d.kind == .memory || (d.kind == .gpu && i == 4)
+                chart.toolTip = d.kind == .gpu && i == 4 ? tr("整机 CPU 与 GPU 共享的内存，已用 = 总量 − 可用。", "The system memory pool shared by CPU and GPU. In use = total − available.") : chart.coreIndex.map { "CPU \($0)" }
+                if memoryChart { chart.ceiling = chartMetric?.value("total") ?? Double(chartDevice?.metadata["total"] ?? "") ?? 1 }
                 else if d.kind == .network { chart.ceiling = rateCeiling(chart.points, multiplier: 8) / 8 }
                 else if d.kind == .disk && i == 1 { chart.ceiling = rateCeiling(chart.points) }
                 else { chart.ceiling = 100 }
                 chartTitles[i].stringValue = caption
-                chartScales[i].stringValue = d.kind == .memory ? bytes(chart.ceiling) : d.kind == .network ? bitRate(chart.ceiling) : d.kind == .disk && i == 1 ? bytes(chart.ceiling, perSecond: true) : d.kind == .gpu ? (i >= 4 ? "—" : number(metric?.value(key), "%", digits: 0)) : "100%"
+                chartScales[i].stringValue = memoryChart ? bytes(chart.ceiling) : d.kind == .network ? bitRate(chart.ceiling) : d.kind == .disk && i == 1 ? bytes(chart.ceiling, perSecond: true) : d.kind == .gpu ? number(chartMetric?.value(key), "%", digits: 0) : "100%"
                 chartTimes[i].stringValue = tr("60 秒", "60 seconds")
-                let current = chart.coreIndex.flatMap { c in metric?.cores?.first { ($0["index"] ?? nil) == Double(c) }?["usage"] ?? nil } ?? metric?.value(key)
+                let current = chart.coreIndex.flatMap { c in chartMetric?.cores?.first { ($0["index"] ?? nil) == Double(c) }?["usage"] ?? nil } ?? chartMetric?.value(key)
                 chart.setAccessibilityLabel((chart.coreIndex.map { "CPU \($0)" } ?? caption) + ", " + number(current))
                 chart.needsDisplay = true
             }
@@ -140,27 +162,38 @@ import AppKit
         needsLayout = true; needsDisplay = true
     }
     @objc func selectRow(_ row: HardwareRow) {
+        guard !editingHardware else { return }
         onFocus?(); state.profile.selectedDevice = row.device.id
         AppModel.shared.save(); refresh()
     }
     func updateDetails(_ d: HardwareDevice?, top: CGFloat, width: CGFloat) {
-        details.forEach { $0.0.removeFromSuperview() }; details.removeAll()
+        var cursor = 0
+        defer {
+            while details.count > cursor { details.removeLast().0.removeFromSuperview() }
+        }
+        func add(_ text: String, x: CGFloat, y: CGFloat, w: CGFloat, size: CGFloat = 13, secondary: Bool = false) -> NSTextField {
+            let field: NSTextField
+            if cursor < details.count { field = details[cursor].0 }
+            else { field = label(); content.addSubview(field); details.append((field, .zero)) }
+            let frame = NSRect(x: x, y: top + y, width: w, height: size + 8)
+            field.stringValue = text; field.font = .systemFont(ofSize: size)
+            field.textColor = secondary ? .secondaryLabelColor : .labelColor
+            field.toolTip = nil; field.maximumNumberOfLines = 1
+            field.frame = frame; details[cursor].1 = frame; cursor += 1
+            return field
+        }
+        @discardableResult func stat(_ title: String, _ value: String, x: CGFloat, y: CGFloat, w: CGFloat = 160) -> NSTextField {
+            _ = add(title, x: x, y: y, w: w, secondary: true)
+            return add(value, x: x, y: y + 17, w: w, size: 24)
+        }
         guard let d else {
-            let text = label(state.error ?? tr("连接机器后显示硬件指标。", "Connect a machine to view performance."), size: 14, secondary: true)
-            text.maximumNumberOfLines = 5; text.lineBreakMode = .byWordWrapping
-            content.addSubview(text); text.frame = NSRect(x: 0, y: 100, width: width, height: 130); details.append((text, text.frame)); return
+            let text = add(state.error ?? tr("连接机器后显示硬件指标。", "Connect a machine to view performance."), x: 0, y: 100, w: width, size: 14, secondary: true)
+            text.maximumNumberOfLines = 5; text.lineBreakMode = .byWordWrapping; text.frame.size.height = 130
+            return
         }
         let m = state.latest?.devices[d.id]
         func v(_ key: String) -> Double? { m?.value(key) }
-        func add(_ text: String, x: CGFloat, y: CGFloat, w: CGFloat, size: CGFloat = 13, secondary: Bool = false) -> NSTextField {
-            let field = label(text, size: size, secondary: secondary)
-            let frame = NSRect(x: x, y: top + y, width: w, height: size + 8)
-            field.frame = frame; content.addSubview(field); details.append((field, frame)); return field
-        }
-        func stat(_ title: String, _ value: String, x: CGFloat, y: CGFloat, w: CGFloat = 160) {
-            _ = add(title, x: x, y: y, w: w, secondary: true)
-            _ = add(value, x: x, y: y + 17, w: w, size: 24)
-        }
+        func meta(_ key: String) -> String { d.metadata[key].flatMap { $0.isEmpty ? nil : $0 } ?? "—" }
         let zh = AppModel.shared.preferences.language == "zh"
         var facts: [(String, String)] = []; var factsX: CGFloat = 228; var keyWidth: CGFloat = zh ? 86 : 138
         switch d.kind {
@@ -169,18 +202,16 @@ import AppKit
             stat(tr("速度", "Speed"), number(v("frequency").map { $0 / 1000 }, " GHz", digits: 2), x: 76, y: 0, w: 148)
             stat(tr("进程", "Processes"), number(v("processes"), digits: 0), x: 0, y: 56, w: 68)
             stat(tr("线程", "Threads"), number(v("threads"), digits: 0), x: 76, y: 56, w: 68)
-            stat(tr("句柄", "Handles"), "—", x: 150, y: 56, w: 72)
+            stat(tr("负载 (1m)", "Load (1m)"), number(v("load")), x: 150, y: 56, w: 78)
             let uptime = state.latest.map { Int($0.uptime) }
             let duration = uptime.map { String(format: "%d:%02d:%02d:%02d", $0 / 86400, $0 / 3600 % 24, $0 / 60 % 60, $0 % 60) } ?? "—"
             stat(tr("正常运行时间", "Up time"), duration, x: 0, y: 112, w: 225)
-            let user = add(tr("用户 ", "User ") + number(v("user"), "%"), x: 108, y: 166, w: 118, size: 13)
-            let system = add(tr("系统 ", "System ") + number(v("system"), "%"), x: 0, y: 166, w: 108, size: 13)
-            user.textColor = Style.color(.cpu); system.textColor = Style.color(.cpu).blended(withFraction: 0.3, of: .labelColor)
-            facts = [(tr("基准速度", "Base speed"), "—"), (tr("插槽", "Sockets"), d.metadata["sockets"] ?? "—"),
-                     (tr("内核", "Cores"), d.metadata["cores"] ?? "—"), (tr("逻辑处理器", "Logical processors"), d.metadata["cores"] ?? "—"),
-                     (tr("虚拟化", "Virtualization"), "—")]
+            let temperature = stat(tr("温度", "Temperature"), number(v("temperature"), " °C", digits: 0), x: 0, y: 168, w: 180)
+            temperature.toolTip = (m?.sensors ?? [:]).sorted { $0.key < $1.key }.map { $0.key + ": " + number($0.value, " °C") }.joined(separator: "\n")
+            facts = [(tr("最高频率", "Maximum clock"), number(d.metadata["maxFrequency"].flatMap(Double.init).map { $0 / 1000 }, " GHz", digits: 2)),
+                     (tr("插槽", "Sockets"), meta("sockets")), (tr("内核", "Cores"), meta("cores")),
+                     (tr("逻辑处理器", "Logical processors"), meta("cores")), (tr("架构", "Architecture"), meta("architecture"))]
             for level in 1...3 { facts.append(("L\(level) " + tr("缓存", "cache"), bytes(d.metadata["cacheL\(level)"].flatMap(Double.init)))) }
-            facts.append((tr("温度", "Temperature"), number(v("temperature"), " °C", digits: 0)))
         case .memory:
             stat(tr("使用中", "In use"), bytes(v("used")), x: 0, y: 0, w: 195)
             stat(tr("可用", "Available"), bytes(v("available")), x: 196, y: 0, w: 120)
@@ -189,48 +220,60 @@ import AppKit
             stat("Swap", bytes(v("swapUsed")), x: 0, y: 112, w: 135)
             stat(tr("Swap 总量", "Swap total"), bytes(v("swapTotal")), x: 136, y: 112, w: 155)
             factsX = 320; keyWidth = zh ? 126 : 153
-            facts = [(tr("速度", "Speed"), "—"), (tr("已使用的插槽", "Slots used"), tr("不适用", "N/A")),
-                     (tr("外形规格", "Form factor"), tr("板载", "Onboard")), (tr("为硬件保留的内存", "Hardware reserved"), "—")]
+            facts = [(tr("类型", "Type"), "LPDDR5X"), (tr("外形规格", "Form factor"), tr("板载", "Onboard")),
+                     (tr("内核缓存", "Kernel slab"), bytes(v("slab"))), (tr("可回收内核缓存", "Reclaimable slab"), bytes(v("reclaimable"))),
+                     (tr("共享页", "Shared pages"), bytes(v("shared"))), (tr("待写回", "Dirty pages"), bytes(v("dirty")))]
         case .disk:
             stat(tr("活动时间", "Active time"), number(v("usage"), "%", digits: 0), x: 0, y: 0, w: 76)
             stat(tr("平均响应时间", "Average response time"), number(v("latency"), tr(" 毫秒", " ms")), x: 78, y: 0, w: 194)
             stat(tr("读取速度", "Read speed"), bytes(v("read"), perSecond: true), x: 8, y: 56, w: 151)
             stat(tr("写入速度", "Write speed"), bytes(v("write"), perSecond: true), x: 167, y: 56, w: 150)
+            stat(tr("温度", "Temperature"), number(v("temperature"), " °C", digits: 0), x: 8, y: 112)
             factsX = 315; keyWidth = zh ? 86 : 116
             facts = [(tr("容量", "Capacity"), bytes(v("capacity"))), (tr("已格式化", "Formatted"), bytes(v("total"))),
                      (tr("系统磁盘", "System disk"), d.metadata["system"].map { $0 == "true" ? tr("是", "Yes") : tr("否", "No") } ?? "—"),
-                     (tr("类型", "Type"), d.metadata["type"] ?? "SSD (NVMe)"), (tr("温度", "Temperature"), number(v("temperature"), " °C", digits: 0))]
+                     (tr("类型", "Type"), meta("type")), (tr("可用空间", "Available space"), bytes(v("free"))),
+                     (tr("设备", "Device"), d.name)]
         case .network:
             stat(tr("发送", "Send"), bitRate(v("send")), x: 8, y: 0, w: 136)
             stat(tr("接收", "Receive"), bitRate(v("receive")), x: 8, y: 56, w: 136)
-            factsX = 130; keyWidth = zh ? 90 : 132
-            facts = [(tr("适配器名称", "Adapter name"), deviceTitle(d)), ("SSID", d.metadata["ssid"] ?? "—"),
-                     (tr("DNS 名称", "DNS name"), d.metadata["dns"] ?? "—"), (tr("连接类型", "Connection type"), d.metadata["type"] ?? "—"),
-                     (tr("IPv4 地址", "IPv4 address"), d.metadata["ipv4"].flatMap { $0.isEmpty ? nil : $0 } ?? "—"),
-                     (tr("IPv6 地址", "IPv6 address"), d.metadata["ipv6"].flatMap { $0.isEmpty ? nil : $0 } ?? "—"),
-                     (tr("链路速度", "Link speed"), v("linkSpeed").map { bitRate($0 * 1_000_000 / 8) } ?? "—")]
+            factsX = 130; keyWidth = zh ? 104 : 132
+            facts = [(tr("适配器名称", "Adapter name"), d.name)]
+            let wifi = d.metadata["type"] == "Wi-Fi"
+            if wifi { facts.append(("SSID", state.live ? meta("ssid") : "—")) }
+            facts += [(tr("DNS 后缀", "DNS suffix"), meta("domain")),
+                      (tr("连接类型", "Connection type"), wifi ? meta("protocol") : meta("type")),
+                      (tr("IPv4 地址", "IPv4 address"), meta("ipv4")), (tr("IPv6 地址", "IPv6 address"), meta("ipv6"))]
+            if wifi {
+                facts += [(tr("信号强度", "Signal strength"), number(v("signal"), " dBm", digits: 0)),
+                          (tr("接收 / 发送速率", "Rx / Tx link rate"), bitRate(v("rxSpeed").map { $0 * 1_000_000 / 8 }) + " / " + bitRate(v("txSpeed").map { $0 * 1_000_000 / 8 })),
+                          (tr("无线频率", "Radio frequency"), number(v("radioFrequency"), " MHz", digits: 0))]
+            } else {
+                facts += [(tr("链路速度", "Link speed"), v("linkSpeed").map { bitRate($0 * 1_000_000 / 8) } ?? "—"),
+                          (tr("双工模式", "Duplex"), meta("duplex"))]
+            }
+            facts += [(tr("DNS 服务器", "DNS servers"), meta("dns")), (tr("MAC 地址", "MAC address"), meta("mac")),
+                      (tr("错误 / 丢包", "Errors / drops"), number(v("errors"), digits: 0) + " / " + number(v("drops"), digits: 0))]
             if d.metadata["rdma_ports"] != nil && d.metadata["rdma_ports"] != "[]" { facts.append((tr("RDMA 发送 / 接收", "RDMA sent / received"), bytes(v("rdmaSent")) + " / " + bytes(v("rdmaReceived")))) }
         case .gpu:
+            let memory = state.latest?.devices["memory"]
             stat(tr("利用率", "Utilization"), number(v("usage"), "%", digits: 0), x: 0, y: 0, w: 130)
-            stat(tr("专用 GPU 内存", "Dedicated GPU memory"), "—", x: 145, y: 0, w: 165)
-            stat(tr("GPU 内存", "GPU memory"), "—", x: 0, y: 56, w: 130)
-            stat(tr("共享 GPU 内存", "Shared GPU memory"), "—", x: 145, y: 56, w: 165)
+            let unified = stat(tr("统一内存", "Unified memory"), memoryPair(memory?.value("used"), memory?.value("total")), x: 145, y: 0, w: 210)
+            unified.toolTip = tr("整机 CPU 与 GPU 共享池的已用 / 总量，不是 GPU 独占内存。", "System-wide CPU/GPU pool: in use / total. Not a GPU-only allocation.")
+            stat(tr("功耗", "Power"), number(v("power"), " W"), x: 0, y: 56, w: 130)
+            stat(tr("频率", "Clock"), number(v("frequency"), " MHz", digits: 0), x: 145, y: 56, w: 160)
             stat(tr("温度", "Temperature"), number(v("temperature"), " °C", digits: 0), x: 145, y: 112, w: 130)
-            stat(tr("功耗", "Power"), number(v("power"), " W"), x: 0, y: 112, w: 130)
-            factsX = 314; keyWidth = zh ? 106 : 143
-            facts = [(tr("驱动程序版本", "Driver version"), d.metadata["driver"] ?? "—"), (tr("驱动程序日期", "Driver date"), "—"),
-                     (tr("内存架构", "Memory architecture"), tr("统一内存", "Unified memory")), (tr("频率", "Clock"), number(v("frequency"), " MHz", digits: 0))]
+            factsX = 362; keyWidth = zh ? 106 : 112
+            facts = [(tr("驱动版本", "Driver version"), meta("driver")),
+                     (tr("内存架构", "Memory model"), tr("CPU / GPU 共享", "CPU / GPU shared")), (tr("PCI 位置", "PCI location"), meta("pci"))]
         }
         for (i, fact) in facts.enumerated() {
             let title = add(fact.0 + ":", x: factsX, y: CGFloat(i) * 21, w: keyWidth, secondary: true)
             let value = add(fact.1, x: factsX + keyWidth + 4, y: CGFloat(i) * 21, w: max(50, width - factsX - keyWidth - 4))
             title.toolTip = fact.0; value.toolTip = fact.1
-            if d.kind == .cpu && i == facts.count - 1 { value.toolTip = (m?.sensors ?? [:]).sorted { $0.key < $1.key }.map { $0.key + ": " + number($0.value, " °C") }.joined(separator: "\n") }
         }
         if d.kind == .memory {
-            let text = label(tr("内存组合", "Memory composition"), size: 12, secondary: true)
-            text.frame = NSRect(x: 0, y: composition.frame.minY - 23, width: 190, height: 20)
-            content.addSubview(text); details.append((text, text.frame))
+            _ = add(tr("内存组合", "Memory composition"), x: 0, y: composition.frame.minY - 23 - top, w: 190, size: 12, secondary: true)
         }
     }
     override func layout() {
@@ -245,7 +288,6 @@ import AppKit
         detailScroll.frame = NSRect(x: sideWidth + 30, y: offset, width: bounds.width - sideWidth - 56, height: bounds.height - offset)
         let w = detailScroll.contentSize.width
         let h = max(640, detailScroll.contentSize.height)
-        content.frame = NSRect(x: 0, y: 0, width: w, height: h)
         titleLabel.frame = NSRect(x: 0, y: 12, width: w * 0.5, height: 44)
         modelLabel.frame = NSRect(x: w * 0.34, y: 26, width: w * 0.66, height: 26)
         let top: CGFloat = 76
@@ -253,7 +295,7 @@ import AppKit
         let kind = selected?.kind
         switch kind {
         case .cpu:
-            let height = h - 294
+            let height = h - 326
             if state.profile.logicalCPU {
                 let rowCount = CGFloat((charts.count + 4) / 5), cellW = (w - 16) / 5
                 let cellH = (height - (rowCount - 1) * 5) / max(1, rowCount)
@@ -265,21 +307,23 @@ import AppKit
             composition.frame = NSRect(x: 0, y: frames[0].maxY + 45, width: w, height: 58)
             newStatsTop = composition.frame.maxY + 28
         case .disk:
-            frames = [NSRect(x: 0, y: top, width: w, height: h - 352)]
+            frames = [NSRect(x: 0, y: top, width: w, height: h - 398)]
             frames.append(NSRect(x: 0, y: frames[0].maxY + 45, width: w, height: 75))
             newStatsTop = frames[1].maxY + 28
         case .network:
-            frames = [NSRect(x: 0, y: top, width: w, height: h - 276)]
+            frames = [NSRect(x: 0, y: top, width: w, height: h - 376)]
             newStatsTop = frames[0].maxY + 32
         case .gpu:
             let half = (w - 10) / 2
             let gpuTop = top + 8
-            frames = (0..<4).map { NSRect(x: CGFloat($0 % 2) * (half + 10), y: gpuTop + CGFloat($0 / 2) * 116, width: half, height: 85) }
-            frames += [NSRect(x: 0, y: gpuTop + 233, width: w, height: 75), NSRect(x: 0, y: gpuTop + 332, width: w, height: 75)]
-            newStatsTop = gpuTop + 425
-            content.frame.size.height = max(h, newStatsTop + 188)
+            let graphHeight = (h - 340) / 3
+            frames = (0..<4).map { NSRect(x: CGFloat($0 % 2) * (half + 10), y: gpuTop + CGFloat($0 / 2) * (graphHeight + 32), width: half, height: graphHeight) }
+            frames.append(NSRect(x: 0, y: gpuTop + 2 * (graphHeight + 32), width: w, height: graphHeight))
+            newStatsTop = frames[4].maxY + 28
         default: break
         }
+        let finalFrame = NSRect(x: 0, y: 0, width: w, height: h)
+        if content.frame != finalFrame { content.frame = finalFrame }
         for (i, chart) in charts.enumerated() where i < frames.count {
             chart.frame = frames[i]
             let title = chartTitles[i], scale = chartScales[i], time = chartTimes[i], zero = chartZeros[i]

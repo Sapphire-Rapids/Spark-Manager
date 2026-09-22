@@ -11,6 +11,12 @@ spec.loader.exec_module(collector)
 
 
 class CounterTests(unittest.TestCase):
+    def test_wifi_link_keeps_colon_in_ssid_and_negotiated_rate(self):
+        parsed = collector.parse_wifi_link('Connected to 02:00:00:00:00:01\n\tSSID: Spark: Lab\n\tsignal: -48 dBm\n\trx bitrate: 1200.0 MBit/s HE-MCS 11\n')
+        self.assertEqual(parsed['SSID'], 'Spark: Lab')
+        self.assertEqual(float(parsed['signal'].split()[0]), -48)
+        self.assertEqual(float(parsed['rx bitrate'].split()[0]), 1200)
+
     def test_cpu_user_system_and_guest_not_double_counted(self):
         before = [0] * 10
         after = [20, 5, 10, 40, 10, 5, 10, 0, 12, 1]

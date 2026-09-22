@@ -14,6 +14,7 @@ struct HostProfile: Codable, Identifiable, Equatable {
     var addedDevices: Set<String> = []
     var logicalCPU = false
     var selectedDevice = "cpu"
+    var deviceOrder: [String]?
 }
 struct HardwareDevice: Codable, Identifiable, Equatable {
     let id: String
