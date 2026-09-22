@@ -15,6 +15,7 @@ import AppKit
     let emptyAdd = NSButton()
     var lastStructure = ""
     var themeLanguage = ""
+    var displayedTheme = ""
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         [heading, language, theme, add, tabs, emptyLabel, emptyDetail, emptyAdd].forEach(addSubview)
@@ -38,8 +39,12 @@ import AppKit
         if themeLanguage != model.preferences.language {
             themeLanguage = model.preferences.language
             theme.removeAllItems(); theme.addItems(withTitles: [tr("跟随系统", "System theme"), tr("浅色", "Light"), tr("深色", "Dark")])
+            displayedTheme = ""
         }
-        theme.selectItem(at: ["system", "light", "dark"].firstIndex(of: model.preferences.theme) ?? 0)
+        if displayedTheme != model.preferences.theme {
+            displayedTheme = model.preferences.theme
+            theme.selectItem(at: ["system", "light", "dark"].firstIndex(of: model.preferences.theme) ?? 0)
+        }
         add.title = tr("＋ 添加机器", "+ Add machine")
         emptyLabel.stringValue = tr("连接你的 DGX Spark", "Connect your DGX Spark")
         emptyDetail.stringValue = tr("通过 SSH 查看实时性能。无需在远端安装软件。", "Live performance over SSH. No remote installation required.")
