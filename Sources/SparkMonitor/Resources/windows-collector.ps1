@@ -30,28 +30,25 @@ function EngineGroups($readings,$gpu) {
     }
     $result
 }
-# Slow storage/firmware queries run in a separate in-process runspace, so
+# Slow storage reliability queries run in a separate in-process runspace, so
 # they cannot pause the one-second PDH stream.
 $sensorScript = {
     param($physicalDisks)
     $global:ProgressPreference='SilentlyContinue'
-    $diskTemps=@{}; $cpuSensors=@{}
+    $diskTemps=@{}
     foreach ($pd in $physicalDisks) {
         $reading=$pd | Get-StorageReliabilityCounter -ErrorAction SilentlyContinue
         if ($null -ne $reading.Temperature -and $reading.Temperature -gt 0) { $diskTemps[[string]$pd.DeviceId]=[double]$reading.Temperature }
     }
-    foreach ($zone in @(Get-CimInstance -Namespace root/wmi MSAcpi_ThermalZoneTemperature -ErrorAction SilentlyContinue)) {
-        if ($zone.InstanceName -match 'CPU' -and $zone.CurrentTemperature -gt 0) { $cpuSensors[[string]$zone.InstanceName]=[Math]::Round($zone.CurrentTemperature/10.0-273.15,1) }
-    }
-    @{disk=$diskTemps;cpu=$cpuSensors}
+    @{disk=$diskTemps}
 }
-$script:diskTemps=@{}; $script:cpuSensors=@{}
+$script:diskTemps=@{}
 function Discover {
     $devices=[Collections.Generic.List[object]]::new()
     $cpus=@(Get-CimInstance Win32_Processor)
     $cores=($cpus | Measure-Object NumberOfCores -Sum).Sum
     $logical=($cpus | Measure-Object NumberOfLogicalProcessors -Sum).Sum
-    $cpuMeta=@{platform='windows';cores=[string]$cores;logicalProcessors=[string]$logical;sockets=[string]$cpus.Count;baseFrequency=[string]$cpus[0].MaxClockSpeed;virtualization=[string]$cpus[0].VirtualizationFirmwareEnabled;temperatureSource='ACPI'}
+    $cpuMeta=@{platform='windows';cores=[string]$cores;logicalProcessors=[string]$logical;sockets=[string]$cpus.Count;baseFrequency=[string]$cpus[0].MaxClockSpeed;virtualization=[string]$cpus[0].VirtualizationFirmwareEnabled}
     $allCaches=@(Get-CimInstance Win32_CacheMemory)
     foreach ($level in 1..3) {
         $cache=@($allCaches | Where-Object {$_.Level -eq ($level+2)})
@@ -121,7 +118,7 @@ try {
         $counter.Collect()
         if ($null -ne $sensorTask -and $sensorTask.IsCompleted) {
             $result=$sensorWorker.EndInvoke($sensorTask)
-            if ($result.Count -gt 0) { $script:diskTemps=$result[0].disk; $script:cpuSensors=$result[0].cpu }
+            if ($result.Count -gt 0) { $script:diskTemps=$result[0].disk }
             $sensorTask=$null
         }
         if ($null -eq $sensorTask -and $lastSensor.Elapsed.TotalSeconds -ge 15) {
@@ -134,10 +131,9 @@ try {
         $modified=$counter.Scalar('modified'); $standby=$counter.Scalar('standbyCore')+$counter.Scalar('standbyNormal')+$counter.Scalar('standbyReserve')
         $freq=$counter.Scalar('frequency'); $perf=$counter.Scalar('performance'); if ($null -ne $freq -and $null -ne $perf) {$freq=$freq*$perf/100.0}
         $cv=@{usage=(Clamp $cpu['_Total']);user=$user['_Total'];system=$system['_Total'];frequency=$freq;processes=[double]$p.Processes;threads=[double]$p.Threads;handles=[double]$p.Handles;temperature=$null}
-        if ($script:cpuSensors.Count -gt 0) {$cv.temperature=($script:cpuSensors.Values | Measure-Object -Maximum).Maximum}
         $coreValues=@(for ($i=0;$i -lt $cores.Count;$i++) { $k=$cores[$i]; @{index=$i;usage=(Clamp $cpu[$k]);user=$user[$k];system=$system[$k]} })
         $used=$total-$available-$modified
-        $metrics=@{cpu=@{values=$cv;cores=$coreValues;sensors=$script:cpuSensors};memory=@{values=@{total=$total;used=$used;available=$available;usage=$used*100/$total;committed=(Bytes $p.CommitTotal)*$page;commitLimit=(Bytes $p.CommitLimit)*$page;cached=$standby+$modified;paged=(Bytes $p.KernelPaged)*$page;nonpaged=(Bytes $p.KernelNonpaged)*$page;modified=$modified;standby=$standby;free=$counter.Scalar('free');reserved=$script:installedMemory-$total}}}
+        $metrics=@{cpu=@{values=$cv;cores=$coreValues};memory=@{values=@{total=$total;used=$used;available=$available;usage=$used*100/$total;committed=(Bytes $p.CommitTotal)*$page;commitLimit=(Bytes $p.CommitLimit)*$page;cached=$standby+$modified;paged=(Bytes $p.KernelPaged)*$page;nonpaged=(Bytes $p.KernelNonpaged)*$page;modified=$modified;standby=$standby;free=$counter.Scalar('free');reserved=$script:installedMemory-$total}}}
         $idle=$counter.Values('diskIdle'); $read=$counter.Values('diskRead'); $write=$counter.Values('diskWrite'); $latency=$counter.Values('diskLatency')
         foreach ($disk in $script:disks) {
             $index=[string]$disk.Number; $instance=$idle.Keys | Where-Object {($_ -split ' ')[0] -eq $index} | Select-Object -First 1

@@ -38,7 +38,7 @@ Windows 11 自带的 OpenSSH Server 需要先启用，并配置好 SSH 登录。
 
 采集使用系统自带 Windows PowerShell 5.1、CIM、PDH 性能计数器、DXGI、D3DKMT 与 WLAN API。应用通过 SFTP 将短期采集脚本写入该账户默认 TEMP 目录，读入内存后立即删除；不修改远端系统配置。关闭连接结束采集进程。
 
-Windows 页面显示实际核心／线程数、句柄、分页池、盘符，以及 GPU 各引擎和专用／共享内存。GPU 四个图表的下拉菜单可选择实际引擎并保存。CPU 温度若来自固件热区，会明确标为 ACPI；没有瓦数读数时不显示功耗。内存压缩量暂未接入，不把其他进程内存冒充压缩量。
+Windows 页面显示实际核心／线程数、句柄、分页池、盘符，以及 GPU 各引擎和专用／共享内存。GPU 四个图表的下拉菜单可选择实际引擎并保存。Windows ACPI 热区不能可靠代表 CPU 温度，因此不采集或显示 CPU 温度；没有瓦数读数时不显示功耗。内存压缩量暂未接入，不把其他进程内存冒充压缩量。
 
 ## English
 
@@ -58,7 +58,7 @@ Preview archives are ad-hoc signed, **not notarized**. Use macOS's normal Privac
 
 Windows 11 needs its built-in OpenSSH Server enabled and working SSH authentication. No Python, CPU-Z, HWiNFO, additional .NET runtime or monitoring service is installed. Built-in PowerShell 5.1 compiles the small included C# system-API declarations. A temporary sampler is uploaded to the account's default TEMP directory and deleted before execution.
 
-Windows pages use actual processor/thread counts, handle counts, memory pools, drive letters and WDDM GPU engines. Each of the four GPU graphs has an engine selector. GPU dedicated/shared memory comes from DXGI and performance counters, not system RAM usage. CPU firmware temperatures are labeled ACPI; unsupported watt readings remain absent. Compressed-memory size is not yet collected.
+Windows pages use actual processor/thread counts, handle counts, memory pools, drive letters and WDDM GPU engines. Each of the four GPU graphs has an engine selector. GPU dedicated/shared memory comes from DXGI and performance counters, not system RAM usage. Windows ACPI thermal zones are not a reliable CPU temperature source, so CPU temperature is not collected or shown. Unsupported watt readings remain absent. Compressed-memory size is not yet collected.
 
 ## Build / 构建
 

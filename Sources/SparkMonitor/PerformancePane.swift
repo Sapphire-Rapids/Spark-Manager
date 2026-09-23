@@ -249,8 +249,10 @@ import AppKit
             let duration = uptime.map { String(format: "%d:%02d:%02d:%02d", $0 / 86400, $0 / 3600 % 24, $0 / 60 % 60, $0 % 60) } ?? "—"
             stat(tr("正常运行时间", "Up time"), duration, x: 0, y: 112, w: 225)
             if let power { stat(tr("功耗", "Power"), number(power, " W"), x: 0, y: 168, w: 110) }
-            let temperature = stat(windows ? tr("温度 (ACPI)", "Temperature (ACPI)") : tr("温度", "Temperature"), number(v("temperature"), " °C", digits: 0), x: power == nil ? 0 : 114, y: 168, w: power == nil ? 200 : 110)
-            temperature.toolTip = (m?.sensors ?? [:]).sorted { $0.key < $1.key }.map { $0.key + ": " + number($0.value, " °C") }.joined(separator: "\n")
+            if let reading = v("temperature") {
+                let temperature = stat(tr("温度", "Temperature"), number(reading, " °C", digits: 0), x: power == nil ? 0 : 114, y: 168, w: power == nil ? 200 : 110)
+                temperature.toolTip = (m?.sensors ?? [:]).sorted { $0.key < $1.key }.map { $0.key + ": " + number($0.value, " °C") }.joined(separator: "\n")
+            }
             if windows { factsX = 260 }
             facts = [(windows ? tr("基准速度", "Base speed") : tr("最高频率", "Maximum clock"), number(d.metadata[windows ? "baseFrequency" : "maxFrequency"].flatMap(Double.init).map { $0 / 1000 }, " GHz", digits: 2)),
                      (tr("插槽", "Sockets"), meta("sockets")), (tr("内核", "Cores"), meta("cores")),
@@ -372,7 +374,7 @@ import AppKit
         let kind = selected?.kind
         switch kind {
         case .cpu:
-            let height = h - 326
+            let height = h - (windows ? 270 : 326)
             if state.profile.logicalCPU {
                 let columns = windows ? (charts.count > 16 ? 8 : 4) : 5
                 let rowCount = CGFloat((charts.count + columns - 1) / columns), cellW = (w - CGFloat(columns - 1) * 4) / CGFloat(columns)
@@ -415,7 +417,11 @@ import AppKit
                 title.frame = NSRect(x: chart.frame.minX, y: chart.frame.minY - 22, width: chart.frame.width * 0.75, height: 19)
                 scale.frame = NSRect(x: chart.frame.minX + chart.frame.width * 0.75, y: chart.frame.minY - 22, width: chart.frame.width * 0.25, height: 19)
             }
-            if i < engineMenus.count { engineMenus[i].frame = NSRect(x: chart.frame.minX - 4, y: chart.frame.minY - 25, width: chart.frame.width * 0.7, height: 23) }
+            if i < engineMenus.count {
+                let menu = engineMenus[i]
+                let titleWidth = ((menu.titleOfSelectedItem ?? "") as NSString).size(withAttributes: [.font: menu.font ?? NSFont.systemFont(ofSize: 12)]).width
+                menu.frame = NSRect(x: chart.frame.minX - 4, y: chart.frame.minY - 25, width: min(chart.frame.width * 0.7, ceil(titleWidth) + 28), height: 23)
+            }
             time.isHidden = logical || kind == .gpu; zero.isHidden = logical || kind == .gpu
             time.frame = NSRect(x: chart.frame.minX, y: chart.frame.maxY + 1, width: 100, height: 18)
             zero.frame = NSRect(x: chart.frame.maxX - 25, y: chart.frame.maxY + 1, width: 25, height: 18)
