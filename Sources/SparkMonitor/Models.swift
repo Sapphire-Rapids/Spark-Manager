@@ -15,6 +15,8 @@ struct HostProfile: Codable, Identifiable, Equatable {
     var logicalCPU = false
     var selectedDevice = "cpu"
     var deviceOrder: [String]?
+    var platform: String?
+    var gpuGraphs: [String: [String]]?
 }
 struct HardwareDevice: Codable, Identifiable, Equatable {
     let id: String
@@ -27,6 +29,7 @@ struct HardwareDevice: Codable, Identifiable, Equatable {
 struct HardwareInventory: Codable {
     var hostname: String
     var devices: [HardwareDevice]
+    var platform: String?
 }
 struct DeviceMetrics: Codable {
     var values: [String: Double?]
@@ -42,6 +45,7 @@ struct MetricsSnapshot: Codable {
 struct CollectorMessage: Codable {
     var inventory: HardwareInventory?
     var snapshot: MetricsSnapshot?
+    var samplerPid: Int?
 }
 struct HistoryPoint {
     let received: Date

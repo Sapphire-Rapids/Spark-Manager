@@ -233,7 +233,7 @@ struct ChartPoint {
     case .memory: return tr("内存", "Memory")
     case .disk:
         let index = device.metadata["index"] ?? "0"
-        return tr("磁盘", "Disk") + " " + index
+        return tr("磁盘", "Disk") + " " + index + (device.metadata["letters"].flatMap { $0.isEmpty ? nil : " (" + $0 + ")" } ?? "")
     case .network:
         let type = device.metadata["type"] ?? device.model
         return type == "Wi-Fi" ? "Wi-Fi" : tr("以太网", "Ethernet")

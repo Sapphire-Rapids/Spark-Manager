@@ -40,7 +40,7 @@ enum CredentialStore {
     var error: String?
     var lastReceived: Date?
     var task: Task<Void, Never>?
-    var collector: DGXSparkCollector?
+    var collector: SSHPerformanceCollector?
     var generation = UUID()
     init(_ profile: HostProfile) { self.profile = profile }
     var live: Bool { status == "connected" && (lastReceived.map { Date().timeIntervalSince($0) < 4 } ?? false) }
@@ -116,7 +116,7 @@ enum CredentialStore {
             guard let self, let state else { return }
             do {
                 let secret = try CredentialStore.load(state.profile.id)
-                let collector = DGXSparkCollector()
+                let collector = SSHPerformanceCollector()
                 state.collector = collector
                 try await collector.start(profile: state.profile, secret: secret, trust: { fingerprint in
                     guard state.generation == generation else { return false }
@@ -149,7 +149,7 @@ enum CredentialStore {
                 state.status = "disconnected"
                 state.error = state.error ?? error.localizedDescription
                 self.onChange?()
-                if DGXSparkCollector.isNetworkError(error) {
+                if SSHPerformanceCollector.isNetworkError(error) {
                     try? await Task.sleep(for: .seconds(5))
                     guard state.generation == generation, !Task.isCancelled else { return }
                     self.connect(state)

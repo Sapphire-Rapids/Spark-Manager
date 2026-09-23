@@ -4,6 +4,23 @@ import Testing
 @testable import SparkMonitor
 
 struct ModelTests {
+    @Test @MainActor func windowsPagesUseHardwareCountsAndSeparateGPUMemory() {
+        _ = NSApplication.shared
+        let host = HostState(HostProfile(name: "Windows", host: "example.test", username: "demo", logicalCPU: true, platform: "windows"))
+        host.inventory = HardwareInventory(hostname: "Windows", devices: [
+            HardwareDevice(id: "cpu", kind: .cpu, name: "CPU", model: "Example CPU", defaultVisible: true, metadata: ["cores": "16", "logicalProcessors": "32"]),
+            HardwareDevice(id: "gpu", kind: .gpu, name: "GPU 0", model: "Example GPU", defaultVisible: true, metadata: ["engine:0": "3D", "engine:1": "Copy", "engine:2": "Compute", "engine:3": "Video Decode"])
+        ], platform: "windows")
+        host.append(MetricsSnapshot(timestamp: 1, uptime: 1, devices: ["gpu": DeviceMetrics(values: ["dedicatedUsed": 256e6, "dedicatedTotal": 512e6, "sharedUsed": 1e9, "sharedTotal": 16e9])]))
+        let pane = PerformancePane(state: host); pane.frame = NSRect(x: 0, y: 0, width: 1012, height: 640); pane.layoutSubtreeIfNeeded()
+        #expect(pane.charts.count == 32)
+        #expect(pane.charts[7].frame.minY == pane.charts[0].frame.minY)
+        host.profile.selectedDevice = "gpu"; pane.refresh(); pane.layoutSubtreeIfNeeded()
+        #expect(pane.charts.count == 6)
+        #expect(pane.engineMenus.count == 4)
+        #expect(pane.charts[4].ceiling == 512e6)
+        #expect(pane.charts[5].points.last?.total == 1e9)
+    }
     @Test @MainActor func hardwareOrderAndVisibilityPersist() throws {
         let host = HostState(HostProfile(name: "Example", host: "example.test", username: "demo"))
         host.inventory = HardwareInventory(hostname: "Example", devices: [

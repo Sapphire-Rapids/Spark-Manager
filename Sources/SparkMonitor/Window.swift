@@ -75,7 +75,7 @@ import AppKit
         add.title = tr("添加机器", "Add machine")
         settings.caption = tr("设置", "Settings"); settings.setAccessibilityLabel(settings.caption)
         more.setAccessibilityLabel(tr("更多选项", "More options"))
-        emptyLabel.stringValue = tr("连接你的 DGX Spark", "Connect your DGX Spark")
+        emptyLabel.stringValue = tr("连接你的电脑", "Connect your computer")
         emptyDetail.stringValue = tr("通过 SSH 查看实时性能。无需在远端安装软件。", "Live performance over SSH. No remote installation required.")
         emptyAdd.title = tr("添加 SSH 连接", "Add SSH connection")
         [emptyLabel, emptyDetail, emptyAdd].forEach { $0.isHidden = !model.hosts.isEmpty }

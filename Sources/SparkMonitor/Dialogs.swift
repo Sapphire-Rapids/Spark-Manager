@@ -9,7 +9,7 @@ import AppKit
         alert.addButton(withTitle: tr("保存并连接", "Save and connect"))
         alert.addButton(withTitle: tr("取消", "Cancel"))
         if original != nil { alert.addButton(withTitle: tr("移除连接", "Remove connection")); alert.addButton(withTitle: tr("断开连接", "Disconnect")) }
-        let form = FlippedView(frame: NSRect(x: 0, y: 0, width: 500, height: 354))
+        let form = FlippedView(frame: NSRect(x: 0, y: 0, width: 500, height: 390))
         func field(_ title: String, value: String, y: CGFloat) -> NSTextField {
             let name = label(title, size: 12); name.frame = NSRect(x: 0, y: y + 4, width: 120, height: 20); form.addSubview(name)
             let input = NSTextField(string: value); input.frame = NSRect(x: 125, y: y, width: 370, height: 25); form.addSubview(input); input.setAccessibilityLabel(title)
@@ -31,6 +31,12 @@ import AppKit
         forget.frame = NSRect(x: 125, y: 266, width: 370, height: 24); form.addSubview(forget)
         let resetTrust = NSButton(checkboxWithTitle: tr("重新确认主机指纹", "Confirm host fingerprint again"), target: nil, action: nil)
         resetTrust.frame = NSRect(x: 125, y: 300, width: 370, height: 24); form.addSubview(resetTrust)
+        let platformLabel = label(tr("远端系统", "Remote system"), size: 12)
+        platformLabel.frame = NSRect(x: 0, y: 342, width: 120, height: 20); form.addSubview(platformLabel)
+        let platform = NSPopUpButton(frame: NSRect(x: 125, y: 338, width: 370, height: 26))
+        platform.addItems(withTitles: ["DGX Spark", "Windows"])
+        platform.selectItem(at: original?.platform == "windows" ? 1 : 0)
+        platform.setAccessibilityLabel(platformLabel.stringValue); form.addSubview(platform)
         alert.accessoryView = form
         let response = alert.runModal()
         if response == .alertSecondButtonReturn { return }
@@ -48,6 +54,7 @@ import AppKit
         profile.name = name.stringValue.isEmpty ? host.stringValue : name.stringValue
         profile.host = host.stringValue.trimmingCharacters(in: .whitespaces); profile.port = portNumber
         profile.username = user.stringValue; profile.authentication = auth.indexOfSelectedItem == 0 ? "key" : "password"; profile.keyPath = key.stringValue
+        profile.platform = platform.indexOfSelectedItem == 1 ? "windows" : "spark"
         if original?.host != profile.host || original?.port != profile.port || resetTrust.state == .on { profile.fingerprint = nil }
         do {
             if forget.state == .on || original?.authentication != profile.authentication || original?.keyPath != profile.keyPath { CredentialStore.remove(profile.id) }

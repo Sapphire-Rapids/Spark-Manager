@@ -8,6 +8,7 @@ app_dir="$PWD/dist/Spark Manager.app"
 mkdir -p "$app_dir/Contents/MacOS" "$app_dir/Contents/Resources"
 cp "$bin_dir/SparkManager" "$app_dir/Contents/MacOS/SparkManager"
 cp Sources/SparkMonitor/Resources/collector.py "$app_dir/Contents/Resources/collector.py"
+cp Sources/SparkMonitor/Resources/windows-collector.ps1 Sources/SparkMonitor/Resources/windows-native.cs "$app_dir/Contents/Resources/"
 cp LICENSE docs/THIRD_PARTY.md "$app_dir/Contents/Resources/"
 swift scripts/icon.swift "$PWD/dist/AppIcon.iconset"
 iconutil -c icns "$PWD/dist/AppIcon.iconset" -o "$app_dir/Contents/Resources/AppIcon.icns"
@@ -20,8 +21,8 @@ cat > "$app_dir/Contents/Info.plist" <<'PLIST'
 <key>CFBundleName</key><string>Spark Manager</string>
 <key>CFBundleDisplayName</key><string>Spark Manager</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>0.3.1</string>
-<key>CFBundleVersion</key><string>4</string>
+<key>CFBundleShortVersionString</key><string>0.4.0</string>
+<key>CFBundleVersion</key><string>5</string>
 <key>CFBundleIconFile</key><string>AppIcon</string>
 <key>LSMinimumSystemVersion</key><string>14.0</string>
 <key>NSHighResolutionCapable</key><true/>

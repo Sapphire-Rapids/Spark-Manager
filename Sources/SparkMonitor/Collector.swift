@@ -24,7 +24,7 @@ final class HostKeyCheck: NIOSSHClientServerAuthenticationDelegate, @unchecked S
     }
 }
 
-@MainActor final class DGXSparkCollector: MetricsCollecting {
+@MainActor final class SSHPerformanceCollector: MetricsCollecting {
     private var client: SSHClient?
     private var stopped = false
     func start(profile: HostProfile, secret: String?, trust: @escaping @MainActor (String) -> Bool,
@@ -63,10 +63,29 @@ final class HostKeyCheck: NIOSSHClientServerAuthenticationDelegate, @unchecked S
         client = connection
         if stopped || Task.isCancelled { await stop(); return }
         do {
-            let scriptURL = Bundle.main.url(forResource: "collector", withExtension: "py") ?? Bundle.module.url(forResource: "collector", withExtension: "py")!
-            let script = try String(contentsOf: scriptURL, encoding: .utf8)
-            let quoted = "'" + script.replacingOccurrences(of: "'", with: "'\"'\"'") + "'"
-            let stream = try await connection.executeCommandStream("exec python3 -u -c " + quoted)
+            let command: String
+            if profile.platform == "windows" {
+                let native = try resource("windows-native", extension: "cs")
+                let sampler = try resource("windows-collector", extension: "ps1")
+                let script = "$ProgressPreference='SilentlyContinue'\nAdd-Type -TypeDefinition @'\n" + native + "\n'@\n" + sampler
+                let output = try await connection.executeCommand(Self.powershell("[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); [Console]::Write([IO.Path]::GetTempPath())"))
+                let directory = String(buffer: output).trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "\\", with: "/")
+                let path = directory + "SparkManager-" + UUID().uuidString + ".ps1"
+                let sftp = try await connection.openSFTP()
+                try await sftp.withFile(filePath: path, flags: [.write, .create, .forceCreate]) { file in
+                    try await file.write(ByteBuffer(string: script))
+                }
+                try await sftp.close()
+                let quotedPath = path.replacingOccurrences(of: "'", with: "''")
+                // Windows' command-line limit is too short for the sampler.
+                // Read the temporary upload into memory and delete it before running.
+                command = Self.powershell("$ErrorActionPreference='Stop'; $p='\(quotedPath)'; $s=[IO.File]::ReadAllText($p); Remove-Item -LiteralPath $p; & ([scriptblock]::Create($s))")
+            } else {
+                let script = try resource("collector", extension: "py")
+                let quoted = "'" + script.replacingOccurrences(of: "'", with: "'\"'\"'") + "'"
+                command = "exec python3 -u -c " + quoted
+            }
+            let stream = try await connection.executeCommandStream(command)
             var buffer = Data()
             var remoteError = ""
             for try await event in stream {
@@ -91,6 +110,13 @@ final class HostKeyCheck: NIOSSHClientServerAuthenticationDelegate, @unchecked S
             await stop()
             if !requestedStop { throw error }
         }
+    }
+    private func resource(_ name: String, extension ext: String) throws -> String {
+        let url = Bundle.main.url(forResource: name, withExtension: ext) ?? Bundle.module.url(forResource: name, withExtension: ext)!
+        return try String(contentsOf: url, encoding: .utf8)
+    }
+    static func powershell(_ script: String) -> String {
+        "cmd.exe /d /c powershell.exe -NoLogo -NoProfile -NonInteractive -OutputFormat Text -InputFormat Text -EncodedCommand " + ("$global:ProgressPreference='SilentlyContinue'; " + script).data(using: .utf16LittleEndian)!.base64EncodedString()
     }
     func stop() async {
         stopped = true

@@ -1,6 +1,6 @@
 # Spark Manager / DGX Spark管理器
 
-A native Swift/AppKit macOS performance monitor for NVIDIA DGX Spark, with a Windows 11 Task Manager-inspired performance interface. No WebView, HTTP service, remote installation, or administrator access is required.
+A native Swift/AppKit macOS performance monitor for NVIDIA DGX Spark and Windows PCs, with a Windows 11 Task Manager-inspired performance interface. No WebView, HTTP service, remote installation, or administrator access is required.
 
 **macOS 14+, Apple Silicon.** MIT licensed. Independent community software; not an NVIDIA, Microsoft, or Apple product.
 
@@ -10,11 +10,11 @@ A native Swift/AppKit macOS performance monitor for NVIDIA DGX Spark, with a Win
 
 ### 使用
 
-将 `Spark Manager.app` 拖入 `/Applications`，双击运行。点击“添加机器”，输入 SSH 地址、端口、用户名，选择密码或 OpenSSH Ed25519 / RSA 私钥。支持上述私钥的口令加密；不支持硬件安全密钥、完整 SSH config 解析或跳板机配置。首版不改变远端 SSH 设置。
+将 `Spark Manager.app` 拖入 `/Applications`，双击运行。点击“添加机器”，输入 SSH 地址、端口、用户名，选择远端系统（DGX Spark 或 Windows），再选择密码或 OpenSSH Ed25519 / RSA 私钥。支持上述私钥的口令加密；不支持硬件安全密钥、完整 SSH config 解析或跳板机配置。首版不改变远端 SSH 设置。
 
 第一次连接会显示主机指纹，请与可信来源核对。主机指纹改变时不会自动接受，可在核实后通过连接设置重新确认。密码和私钥口令保存在 macOS Keychain，私钥本身仍留在原文件中。
 
-- CPU 图右键切换总体利用率和逻辑处理器。Spark 的 20 核使用 5×4 网格。
+- CPU 图右键切换总体利用率和逻辑处理器。Spark 的 20 核使用 5×4 网格；Windows 根据实际逻辑处理器数量排布，32 线程使用 8×4 网格。
 - CPU 的浅色区域为用户态，深色区域为系统态；两者合计为总利用率。
 - 右上角切换中文／EN；“…”菜单切换浅色／深色／系统主题。
 - 点击硬件列表底部“编辑”，直接在列表勾选显示／隐藏，拖动调整顺序。未勾选设备变淡排在下方；点击“完成”退出编辑。
@@ -32,11 +32,19 @@ A native Swift/AppKit macOS performance monitor for NVIDIA DGX Spark, with a Win
 
 完整口径见 [metrics.md](docs/metrics.md)。CPU 温度为 CPU 热区最高温；GPU 功耗不代表整机功耗；Spark 使用统一内存，不伪造独立显存用量。不支持的读数显示 `—`。
 
+### Windows 远端
+
+Windows 11 自带的 OpenSSH Server 需要先启用，并配置好 SSH 登录。添加连接时选择 **Windows**。不需要安装 Python、CPU-Z、HWiNFO、额外 .NET 运行时或监控服务。
+
+采集使用系统自带 Windows PowerShell 5.1、CIM、PDH 性能计数器、DXGI、D3DKMT 与 WLAN API。应用通过 SFTP 将短期采集脚本写入该账户默认 TEMP 目录，读入内存后立即删除；不修改远端系统配置。关闭连接结束采集进程。
+
+Windows 页面显示实际核心／线程数、句柄、分页池、盘符，以及 GPU 各引擎和专用／共享内存。GPU 四个图表的下拉菜单可选择实际引擎并保存。CPU 温度若来自固件热区，会明确标为 ACPI；没有瓦数读数时不显示功耗。内存压缩量暂未接入，不把其他进程内存冒充压缩量。
+
 ## English
 
 ### Usage
 
-Drag the app into `/Applications`, launch it, and add an SSH connection. Passwords and passphrases are stored in macOS Keychain. OpenSSH Ed25519 and RSA private keys, including encrypted keys, are supported; hardware keys, SSH-config parsing and jump hosts are outside this preview.
+Drag the app into `/Applications`, launch it, and add an SSH connection, choosing DGX Spark or Windows as the remote system. Passwords and passphrases are stored in macOS Keychain. OpenSSH Ed25519 and RSA private keys, including encrypted keys, are supported; hardware keys, SSH-config parsing and jump hosts are outside this preview.
 
 Confirm the first host fingerprint against a trusted source. Changed host keys require explicit re-confirmation in connection settings. No remote SSH configuration is modified.
 
@@ -45,6 +53,12 @@ Right-click the CPU chart to choose overall or logical-processor utilization. Us
 History is an in-memory 60-second window. Missing data and disconnections remain gaps. The first run contains no configured hosts. Local preferences live in `~/Library/Application Support/SparkMonitorPreview/`; the original storage and Keychain identifiers are retained so upgrades preserve existing connections.
 
 Preview archives are ad-hoc signed, **not notarized**. Use macOS's normal Privacy & Security “Open Anyway” flow only after verifying the download source; do not disable Gatekeeper. Keychain may ask again after replacing an ad-hoc build.
+
+### Windows hosts
+
+Windows 11 needs its built-in OpenSSH Server enabled and working SSH authentication. No Python, CPU-Z, HWiNFO, additional .NET runtime or monitoring service is installed. Built-in PowerShell 5.1 compiles the small included C# system-API declarations. A temporary sampler is uploaded to the account's default TEMP directory and deleted before execution.
+
+Windows pages use actual processor/thread counts, handle counts, memory pools, drive letters and WDDM GPU engines. Each of the four GPU graphs has an engine selector. GPU dedicated/shared memory comes from DXGI and performance counters, not system RAM usage. CPU firmware temperatures are labeled ACPI; unsupported watt readings remain absent. Compressed-memory size is not yet collected.
 
 ## Build / 构建
 
@@ -66,11 +80,11 @@ The packaging script produces `dist/Spark Manager.app` and `dist/Spark-Manager-m
 
 ## Architecture
 
-`AppKit views → HostProfile / HardwareInventory / MetricsSnapshot → DGXSparkCollector → Citadel SSH → Python stdlib sampler → procfs / sysfs / nvidia-smi`
+`AppKit views → HostProfile / HardwareInventory / MetricsSnapshot → SSHPerformanceCollector → Citadel SSH → platform sampler`
 
-Only `DGXSparkCollector` implements the small `MetricsCollecting` interface. A future platform collector can provide the same inventory and snapshots without changing the views. There is no plugin framework or general Linux compatibility layer.
+`SSHPerformanceCollector` implements the small `MetricsCollecting` interface; the profile selects the DGX Spark Python sampler or the Windows PowerShell/native-API sampler. A future platform collector can provide the same inventory and snapshots without changing the views. There is no plugin framework or general Linux compatibility layer.
 
-The sampler is passed directly to an SSH-owned process and emits newline-delimited JSON. It reads counters once per second, refreshes inventory every 30 seconds, and exits when its parent or stdout disappears. It creates no remote files or system services. IP addresses, hostnames, hardware identifiers, and metric samples stay within your SSH connection and the local app.
+The Spark sampler is passed directly to an SSH-owned process and emits newline-delimited JSON. It reads counters once per second, refreshes inventory every 30 seconds, and exits when its parent or stdout disappears. It creates no remote files or system services. IP addresses, hostnames, hardware identifiers, and metric samples stay within your SSH connection and the local app.
 
 ## Credits
 
