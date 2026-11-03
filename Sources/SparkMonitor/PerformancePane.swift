@@ -50,7 +50,11 @@ import AppKit
     }
     override func mouseDown(with event: NSEvent) { onFocus?() }
     override func draw(_ dirtyRect: NSRect) { Style.surface.setFill(); bounds.fill() }
+    var localMac: Bool { state.profile.isLocal }
     var windows: Bool { state.inventory?.platform == "windows" }
+    func hasRDMA(_ device: HardwareDevice) -> Bool {
+        device.kind == .network && device.metadata["rdma_ports"].map { !$0.isEmpty && $0 != "[]" } == true
+    }
     var engineKeys: [String] {
         (selected?.metadata.keys.filter { $0.hasPrefix("engine:") } ?? []).sorted { (Int($0.dropFirst(7)) ?? 0) < (Int($1.dropFirst(7)) ?? 0) }
     }
@@ -68,7 +72,9 @@ import AppKit
     var selected: HardwareDevice? { state.visibleDevices.first { $0.id == state.profile.selectedDevice } ?? state.visibleDevices.first }
     func refresh() {
         let devices = editingHardware ? state.editableDevices : state.visibleDevices
-        let key = devices.map(\.id).joined(separator: "|") + (selected?.id ?? "") + String(state.profile.logicalCPU) + String(editingHardware) + AppModel.shared.preferences.language + engineKeys.joined() + String(windows)
+        let key = [devices.map(\.id).joined(separator: "|"), selected?.id ?? "", String(state.profile.logicalCPU),
+                   String(editingHardware), AppModel.shared.preferences.language, engineKeys.joined(),
+                   String(windows), selected?.metadata["rdma_ports"] ?? ""].joined(separator: ";")
         if key != viewKey {
             viewKey = key
             rows.forEach { $0.removeFromSuperview() }; rows.removeAll()
@@ -86,7 +92,7 @@ import AppKit
             chartTitles = []; chartScales = []; chartTimes = []; chartZeros = []
             if let device = selected {
                 let cores = Int(device.metadata["logicalProcessors"] ?? device.metadata["cores"] ?? "20") ?? 20
-                let count = device.kind == .cpu && state.profile.logicalCPU ? cores : device.kind == .disk ? 2 : device.kind == .gpu ? (windows ? 6 : 5) : 1
+                let count = device.kind == .cpu && state.profile.logicalCPU ? cores : device.kind == .disk || hasRDMA(device) ? 2 : device.kind == .gpu ? (windows ? 6 : 5) : 1
                 for i in 0..<count {
                     let chart = ChartView(); chart.kind = device.kind; chart.color = Style.color(device.kind)
                     chart.stacked = device.kind == .cpu; chart.logical = state.profile.logicalCPU
@@ -103,7 +109,7 @@ import AppKit
                     scale.alignment = .right; zero.alignment = .right
                     [title, scale, time, zero].forEach(content.addSubview)
                     chartTitles.append(title); chartScales.append(scale); chartTimes.append(time); chartZeros.append(zero)
-                    if windows && device.kind == .gpu && i < 4 {
+                    if (windows || localMac) && device.kind == .gpu && i < 4 {
                         let menu = NSPopUpButton(); menu.isBordered = false; menu.font = .systemFont(ofSize: 12)
                         menu.target = self; menu.action = #selector(chooseEngine(_:)); menu.tag = i
                         for key in engineKeys {
@@ -120,7 +126,7 @@ import AppKit
             detailScroll.contentView.scroll(to: .zero)
         }
         rowContainer.editing = editingHardware; rowContainer.rowCount = rows.count
-        hostLabel.stringValue = state.profile.name
+        hostLabel.stringValue = state.profile.displayName
         editButton.title = editingHardware ? tr("完成", "Done") : tr("编辑", "Edit")
         titleLabel.stringValue = selected.map { $0.kind == .gpu ? "GPU" : deviceTitle($0) } ?? tr("性能", "Performance")
         modelLabel.stringValue = selected?.model ?? ""
@@ -134,14 +140,15 @@ import AppKit
             switch d.kind {
             case .cpu: row.subtitle.stringValue = percent + " " + number(m?.value("frequency").map { $0 / 1000 }, " GHz", digits: 2)
             case .memory: row.subtitle.stringValue = memoryPair(m?.value("used"), m?.value("total")) + " (\(percent))"
-            case .disk: row.subtitle.stringValue = (d.metadata["type"] ?? "SSD (NVMe)") + "\n" + percent
+            case .disk: row.subtitle.stringValue = localMac ? bytes(m?.value("read"), perSecond: true) + " / " + bytes(m?.value("write"), perSecond: true) : (d.metadata["type"] ?? "SSD (NVMe)") + "\n" + percent
             case .network:
-                row.subtitle.stringValue = d.name + "\n" + tr("发送: ", "S: ") + bitRate(m?.value("send")) + " " + tr("接收: ", "R: ") + bitRate(m?.value("receive"))
-            case .gpu: row.subtitle.stringValue = d.model + "\n" + percent + " (" + number(m?.value("temperature"), " °C", digits: 0) + ")"
+                let rdma = hasRDMA(d)
+                row.subtitle.stringValue = (rdma ? "RDMA · " : "") + d.name + "\n" + tr("发送: ", "S: ") + bitRate(m?.value(rdma ? "rdmaSend" : "send")) + " " + tr("接收: ", "R: ") + bitRate(m?.value(rdma ? "rdmaReceive" : "receive"))
+            case .gpu: row.subtitle.stringValue = d.model + "\n" + percent + (m?.value("temperature").map { " (" + number($0, " °C", digits: 0) + ")" } ?? "")
             }
-            let key = d.kind == .network ? "receive" : "usage"
-            row.chart.points = series(state, device: d, key: key, second: d.kind == .network ? "send" : nil)
-            row.chart.ceiling = d.kind == .network ? rateCeiling(row.chart.points, multiplier: 8) / 8 : 100
+            let key = d.kind == .network ? (hasRDMA(d) ? "rdmaReceive" : "receive") : (localMac && d.kind == .disk ? "read" : "usage")
+            row.chart.points = series(state, device: d, key: key, second: d.kind == .network ? (hasRDMA(d) ? "rdmaSend" : "send") : (localMac && d.kind == .disk ? "write" : nil))
+            row.chart.ceiling = d.kind == .network ? rateCeiling(row.chart.points, multiplier: 8) / 8 : (localMac && d.kind == .disk ? rateCeiling(row.chart.points) : 100)
             row.chart.needsDisplay = true; row.needsDisplay = true
             row.setAccessibilityLabel(row.nameLabel.stringValue + ", " + row.subtitle.stringValue)
         }
@@ -165,7 +172,10 @@ import AppKit
                 case .cpu: caption = state.profile.logicalCPU ? tr("60 秒内的利用率 %", "% Utilization over 60 seconds") : tr("利用率 %", "% Utilization")
                 case .memory: key = "used"; caption = tr("内存使用量", "Memory usage")
                 case .disk: caption = i == 0 ? tr("活动时间", "Active time") : tr("磁盘传输速率", "Disk transfer rate"); if i == 1 { key = "read"; second = "write" }
-                case .network: key = "receive"; second = "send"; caption = tr("吞吐量", "Throughput")
+                case .network:
+                    let rdma = hasRDMA(d) && i == 0
+                    key = rdma ? "rdmaReceive" : "receive"; second = rdma ? "rdmaSend" : "send"
+                    caption = rdma ? tr("RDMA 端口吞吐量", "RDMA port throughput") : (hasRDMA(d) ? tr("网卡吞吐量", "Network-interface throughput") : tr("吞吐量", "Throughput"))
                 case .gpu:
                     if windows {
                         key = i < 4 ? selectedEngines[i] : (i == 4 ? "dedicatedUsed" : "sharedUsed")
@@ -175,24 +185,45 @@ import AppKit
                             if engineMenus[i].indexOfSelectedItem != index { engineMenus[i].selectItem(at: index) }
                         }
                     } else {
-                        key = ["usage", "memoryActivity", "encoder", "decoder", "used"][i]
+                        key = localMac ? ["usage", "renderer", "tiler", "unsupportedVideo", "used"][i] : ["usage", "memoryActivity", "encoder", "decoder", "used"][i]
                         caption = [tr("总体利用率", "GPU utilization"), tr("内存读写活动", "Memory activity"), tr("视频编码", "Video Encode"), tr("视频解码", "Video Decode"), tr("统一内存", "Unified memory")][i]
+                        if localMac { caption = [tr("总体利用率", "GPU utilization"), tr("渲染器", "Renderer"), tr("分块器", "Tiler"), tr("视频引擎（不可用）", "Video engine (unavailable)"), tr("统一内存", "Unified memory")][i] }
                     }
+                }
+                if localMac && d.kind == .disk && i == 0 {
+                    key = "operations"; second = nil; caption = tr("磁盘活动（IOPS）", "Disk activity (IOPS)")
+                }
+                if localMac && d.kind == .gpu && i < 4 {
+                    key = selectedEngines[i]; caption = d.metadata[key] ?? "—"
+                    let index = engineKeys.firstIndex(of: key) ?? -1
+                    if engineMenus[i].indexOfSelectedItem != index { engineMenus[i].selectItem(at: index) }
                 }
                 let chartDevice = d.kind == .gpu && i == 4 && !windows ? state.inventory?.devices.first { $0.kind == .memory } : d
                 let chartMetric = chartDevice.flatMap { state.latest?.devices[$0.id] }
                 chart.points = chartDevice.map { series(state, device: $0, key: key, second: second, core: chart.coreIndex) } ?? []
                 let memoryChart = d.kind == .memory || (d.kind == .gpu && i >= 4)
                 chart.toolTip = d.kind == .gpu && i == 4 && !windows ? tr("整机 CPU 与 GPU 共享的内存，已用 = 总量 − 可用。", "The system memory pool shared by CPU and GPU. In use = total − available.") : chart.coreIndex.map { "CPU \($0)" }
+                if d.kind == .network {
+                    var tooltip = tr("实线：接收；虚线：发送。", "Solid: receive; dashed: send.")
+                    if hasRDMA(d) {
+                        tooltip += "\n" + tr("RDMA 是整个端口的流量，与网卡计数可能重叠，分别显示。", "RDMA covers the whole port and can overlap network-interface traffic. The charts are separate.")
+                        if i == 0 { tooltip += "\n" + (d.metadata["rdmaScope"] ?? "") }
+                    }
+                    chart.toolTip = tooltip
+                }
                 if memoryChart {
                     let capacityKey = windows && d.kind == .gpu ? (i == 4 ? "dedicatedTotal" : "sharedTotal") : "total"
-                    chart.ceiling = chartMetric?.value(capacityKey) ?? Double(chartDevice?.metadata[capacityKey] ?? "") ?? 1
+                    let historicalCapacity = chartDevice.flatMap { device in
+                        state.history.reversed().lazy.compactMap { $0.snapshot?.devices[device.id]?.value(capacityKey) }.first
+                    }
+                    chart.ceiling = chartMetric?.value(capacityKey) ?? Double(chartDevice?.metadata[capacityKey] ?? "") ?? historicalCapacity ?? 1
                 }
                 else if d.kind == .network { chart.ceiling = rateCeiling(chart.points, multiplier: 8) / 8 }
-                else if d.kind == .disk && i == 1 { chart.ceiling = rateCeiling(chart.points) }
+                else if d.kind == .disk && (i == 1 || localMac) { chart.ceiling = rateCeiling(chart.points) }
                 else { chart.ceiling = 100 }
                 chartTitles[i].stringValue = caption
-                chartScales[i].stringValue = memoryChart ? bytes(chart.ceiling) : d.kind == .network ? bitRate(chart.ceiling) : d.kind == .disk && i == 1 ? bytes(chart.ceiling, perSecond: true) : d.kind == .gpu ? number(chartMetric?.value(key), "%", digits: 0) : "100%"
+                chartScales[i].stringValue = memoryChart ? bytes(chart.ceiling) : d.kind == .network ? bitRate(chart.ceiling) : d.kind == .disk && (i == 1 || localMac) ? bytes(chart.ceiling, perSecond: true) : d.kind == .gpu ? number(chartMetric?.value(key), "%", digits: 0) : "100%"
+                if localMac && d.kind == .disk && i == 0 { chartScales[i].stringValue = number(chart.ceiling, " IOPS", digits: 0) }
                 chartTimes[i].stringValue = tr("60 秒", "60 seconds")
                 let current = chart.coreIndex.flatMap { c in chartMetric?.cores?.first { ($0["index"] ?? nil) == Double(c) }?["usage"] ?? nil } ?? chartMetric?.value(key)
                 chart.setAccessibilityLabel((chart.coreIndex.map { "CPU \($0)" } ?? caption) + ", " + number(current))
@@ -241,10 +272,10 @@ import AppKit
         switch d.kind {
         case .cpu:
             stat(tr("利用率", "Utilization"), number(v("usage"), "%", digits: 0), x: 0, y: 0, w: 68)
-            stat(tr("速度", "Speed"), number(v("frequency").map { $0 / 1000 }, " GHz", digits: 2), x: 76, y: 0, w: 148)
+            stat(localMac ? tr("速度（性能核）", "Speed (P-cores)") : tr("速度", "Speed"), number(v("frequency").map { $0 / 1000 }, " GHz", digits: 2), x: 76, y: 0, w: 148)
             stat(tr("进程", "Processes"), number(v("processes"), digits: 0), x: 0, y: 56, w: 68)
-            stat(tr("线程", "Threads"), number(v("threads"), digits: 0), x: 76, y: 56, w: 68)
-            stat(windows ? tr("句柄", "Handles") : tr("负载 (1m)", "Load (1m)"), number(v(windows ? "handles" : "load"), digits: windows ? 0 : 1), x: 150, y: 56, w: windows ? 103 : 78)
+            stat(localMac ? tr("速度（能效核）", "Speed (E-cores)") : tr("线程", "Threads"), localMac ? number(v("efficiencyFrequency").map { $0 / 1000 }, " GHz", digits: 2) : number(v("threads"), digits: 0), x: 76, y: 56, w: localMac ? 148 : 68)
+            if !localMac { stat(windows ? tr("句柄", "Handles") : tr("负载 (1m)", "Load (1m)"), number(v(windows ? "handles" : "load"), digits: windows ? 0 : 1), x: 150, y: 56, w: windows ? 103 : 78) }
             let uptime = state.latest.map { Int($0.uptime) }
             let duration = uptime.map { String(format: "%d:%02d:%02d:%02d", $0 / 86400, $0 / 3600 % 24, $0 / 60 % 60, $0 % 60) } ?? "—"
             stat(tr("正常运行时间", "Up time"), duration, x: 0, y: 112, w: 225)
@@ -256,16 +287,20 @@ import AppKit
             if windows { factsX = 260 }
             facts = [(windows ? tr("基准速度", "Base speed") : tr("最高频率", "Maximum clock"), number(d.metadata[windows ? "baseFrequency" : "maxFrequency"].flatMap(Double.init).map { $0 / 1000 }, " GHz", digits: 2)),
                      (tr("插槽", "Sockets"), meta("sockets")), (tr("内核", "Cores"), meta("cores")),
-                     (tr("逻辑处理器", "Logical processors"), windows ? meta("logicalProcessors") : meta("cores")),
+                     (tr("逻辑处理器", "Logical processors"), (windows || localMac) ? meta("logicalProcessors") : meta("cores")),
                      (windows ? tr("虚拟化", "Virtualization") : tr("架构", "Architecture"), windows ? (meta("virtualization").lowercased() == "true" ? tr("已启用", "Enabled") : tr("已禁用", "Disabled")) : meta("architecture"))]
-            for level in 1...3 { facts.append(("L\(level) " + tr("缓存", "cache"), bytes(d.metadata["cacheL\(level)"].flatMap(Double.init)))) }
+            if localMac {
+                facts += [(tr("性能核 / 能效核", "P-cores / E-cores"), meta("performanceCores") + " / " + meta("efficiencyCores")), (tr("负载 (1m)", "Load (1m)"), number(v("load")))]
+                factsX = 235; keyWidth = zh ? 106 : 138
+            }
+            for level in 1...3 where !localMac || d.metadata["cacheL\(level)"] != nil { facts.append(("L\(level) " + tr("缓存", "cache"), bytes(d.metadata["cacheL\(level)"].flatMap(Double.init)))) }
         case .memory:
-            stat(tr("使用中", "In use"), bytes(v("used")), x: 0, y: 0, w: 195)
-            stat(tr("可用", "Available"), bytes(v("available")), x: 196, y: 0, w: 120)
-            stat(tr("已提交", "Committed"), memoryPair(v("committed"), v("commitLimit")), x: 0, y: 56, w: 180)
-            stat(tr("已缓存", "Cached"), bytes(v("cached")), x: 196, y: 56, w: 120)
-            stat(windows ? tr("分页池", "Paged pool") : "Swap", bytes(v(windows ? "paged" : "swapUsed")), x: 0, y: 112, w: 135)
-            stat(windows ? tr("非分页池", "Non-paged pool") : tr("Swap 总量", "Swap total"), bytes(v(windows ? "nonpaged" : "swapTotal")), x: 136, y: 112, w: 155)
+            stat(localMac ? tr("使用中（已压缩）", "In use (Compressed)") : tr("使用中", "In use"), bytes(v("used")) + (localMac ? " (" + bytes(v("compressed")) + ")" : ""), x: 0, y: 0, w: localMac ? 250 : 195)
+            stat(tr("可用", "Available"), bytes(v("available")), x: localMac ? 260 : 196, y: 0, w: 120)
+            stat(localMac ? tr("App 内存", "App memory") : tr("已提交", "Committed"), localMac ? bytes(v("app")) : memoryPair(v("committed"), v("commitLimit")), x: 0, y: 56, w: 180)
+            stat(tr("已缓存", "Cached"), bytes(v("cached")), x: localMac ? 200 : 196, y: 56, w: 120)
+            stat(windows ? tr("分页池", "Paged pool") : (localMac ? tr("联动内存", "Wired memory") : "Swap"), bytes(v(windows ? "paged" : (localMac ? "wired" : "swapUsed"))), x: 0, y: 112, w: 180)
+            stat(windows ? tr("非分页池", "Non-paged pool") : (localMac ? tr("已用 Swap", "Swap used") : tr("Swap 总量", "Swap total")), bytes(v(windows ? "nonpaged" : (localMac ? "swapUsed" : "swapTotal"))), x: localMac ? 200 : 136, y: 112, w: 155)
             factsX = 320; keyWidth = zh ? 126 : 153
             if windows {
                 facts = [(tr("速度", "Speed"), meta("speed") + " MT/s"), (tr("已使用的插槽", "Slots used"), meta("slots")),
@@ -274,27 +309,39 @@ import AppKit
             } else { facts = [(tr("类型", "Type"), d.model), (tr("外形规格", "Form factor"), tr("板载", "Onboard")),
                      (tr("内核缓存", "Kernel slab"), bytes(v("slab"))), (tr("可回收内核缓存", "Reclaimable slab"), bytes(v("reclaimable"))),
                      (tr("共享页", "Shared pages"), bytes(v("shared"))), (tr("待写回", "Dirty pages"), bytes(v("dirty")))] }
+            if localMac {
+                factsX = 385; keyWidth = zh ? 94 : 120
+                facts = [(tr("内存架构", "Memory model"), tr("统一内存", "Unified memory")), (tr("外形规格", "Form factor"), tr("板载", "Onboard")), (tr("可清除内存", "Purgeable"), bytes(v("purgeable"))), (tr("Swap 总量", "Swap total"), bytes(v("swapTotal")))]
+            }
         case .disk:
-            stat(tr("活动时间", "Active time"), number(v("usage"), "%", digits: 0), x: 0, y: 0, w: 76)
-            stat(tr("平均响应时间", "Average response time"), number(v("latency"), tr(" 毫秒", " ms")), x: 78, y: 0, w: 194)
+            stat(localMac ? tr("磁盘活动", "Disk activity") : tr("活动时间", "Active time"), localMac ? number(v("operations"), " IOPS", digits: 0) : number(v("usage"), "%", digits: 0), x: 0, y: 0, w: localMac ? 135 : 76)
+            stat(tr("平均响应时间", "Average response time"), number(v("latency"), tr(" 毫秒", " ms")), x: localMac ? 140 : 78, y: 0, w: localMac ? 174 : 194)
             stat(tr("读取速度", "Read speed"), bytes(v("read"), perSecond: true), x: 8, y: 56, w: 151)
             stat(tr("写入速度", "Write speed"), bytes(v("write"), perSecond: true), x: 167, y: 56, w: 150)
             if let power { stat(tr("功耗", "Power"), number(power, " W"), x: 8, y: 112, w: 151) }
-            stat(tr("温度", "Temperature"), number(v("temperature"), " °C", digits: 0), x: power == nil ? 8 : 167, y: 112, w: 145)
+            if !localMac || v("temperature") != nil { stat(tr("温度", "Temperature"), number(v("temperature"), " °C", digits: 0), x: power == nil ? 8 : 167, y: 112, w: 145) }
             factsX = 315; keyWidth = zh ? 86 : 116
             facts = [(tr("容量", "Capacity"), bytes(v("capacity"))), (tr("已格式化", "Formatted"), bytes(v("total"))),
                      (tr("系统磁盘", "System disk"), d.metadata["system"].map { $0 == "true" ? tr("是", "Yes") : tr("否", "No") } ?? "—"),
                      (tr("类型", "Type"), meta("type")), (tr("可用空间", "Available space"), bytes(v("free"))),
                      (tr("设备", "Device"), d.name)]
+            if localMac {
+                facts = [(tr("容量", "Capacity"), bytes(v("capacity"))), (tr("已格式化", "Formatted"), bytes(v("total"))), (tr("系统磁盘", "System disk"), meta("system") == "true" ? tr("是", "Yes") : tr("否", "No")), (tr("类型", "Type"), meta("type")), (tr("可用空间", "Available space"), bytes(v("free"))), (tr("设备", "Device"), d.name)]
+            }
             if windows {
                 facts = [(tr("容量", "Capacity"), bytes(v("capacity"))), (tr("已格式化", "Formatted"), bytes(v("total"))),
                          (tr("系统磁盘", "System disk"), meta("system") == "true" ? tr("是", "Yes") : tr("否", "No")),
                          (tr("页面文件", "Page file"), meta("pagefile") == "true" ? tr("是", "Yes") : tr("否", "No")), (tr("类型", "Type"), meta("type"))]
             }
         case .network:
-            stat(tr("发送", "Send"), bitRate(v("send")), x: 8, y: 0, w: 136)
-            stat(tr("接收", "Receive"), bitRate(v("receive")), x: 8, y: 56, w: 136)
-            factsX = 130; keyWidth = zh ? 104 : 132
+            let rdma = hasRDMA(d)
+            if rdma {
+                stat(tr("RDMA 发送", "RDMA send"), bitRate(v("rdmaSend")), x: 8, y: 0, w: 152)
+                stat(tr("RDMA 接收", "RDMA receive"), bitRate(v("rdmaReceive")), x: 8, y: 56, w: 152)
+            }
+            stat(rdma ? tr("网卡发送", "Network send") : tr("发送", "Send"), bitRate(v("send")), x: 8, y: rdma ? 112 : 0, w: rdma ? 152 : 136)
+            stat(rdma ? tr("网卡接收", "Network receive") : tr("接收", "Receive"), bitRate(v("receive")), x: 8, y: rdma ? 168 : 56, w: rdma ? 152 : 136)
+            factsX = rdma ? 168 : 130; keyWidth = zh ? 104 : 132
             facts = [(tr("适配器名称", "Adapter name"), d.name)]
             let wifi = d.metadata["type"] == "Wi-Fi"
             if wifi { facts.append(("SSID", state.live ? meta("ssid") : "—")) }
@@ -311,15 +358,20 @@ import AppKit
             }
             facts += [(tr("DNS 服务器", "DNS servers"), meta("dns")), (tr("MAC 地址", "MAC address"), meta("mac")),
                       (tr("错误 / 丢包", "Errors / drops"), number(v("errors"), digits: 0) + " / " + number(v("drops"), digits: 0))]
-            if windows {
+            if windows || localMac {
                 facts = [(tr("适配器名称", "Adapter name"), d.name)]
                 if wifi { facts.append(("SSID", state.live ? meta("ssid") : "—")) }
                 facts += [(tr("DNS 名称", "DNS name"), meta("domain")), (tr("连接类型", "Connection type"), wifi ? meta("protocol") : meta("type")),
                           (tr("IPv4 地址", "IPv4 address"), meta("ipv4")), (tr("IPv6 地址", "IPv6 address"), meta("ipv6"))]
-                if wifi { facts.append((tr("信号强度", "Signal strength"), number(v("signal"), "%", digits: 0))) }
-                else { facts.append((tr("链路速度", "Link speed"), v("linkSpeed").map { bitRate($0 * 1_000_000 / 8) } ?? "—")) }
+                if wifi { facts.append((tr("信号强度", "Signal strength"), number(v("signal"), localMac ? " dBm" : "%", digits: 0))) }
+                if localMac && wifi { facts.append((tr("发送链路速率", "Transmit link rate"), bitRate(v("txSpeed").map { $0 * 1_000_000 / 8 }))) }
+                if !wifi { facts.append((tr("链路速度", "Link speed"), v("linkSpeed").map { bitRate($0 * 1_000_000 / 8) } ?? "—")) }
             }
-            if d.metadata["rdma_ports"] != nil && d.metadata["rdma_ports"] != "[]" { facts.append((tr("RDMA 发送 / 接收", "RDMA sent / received"), bytes(v("rdmaSent")) + " / " + bytes(v("rdmaReceived")))) }
+            if rdma {
+                facts += [(tr("RDMA 累计发送", "RDMA total sent"), bytes(v("rdmaSent"))),
+                          (tr("RDMA 累计接收", "RDMA total received"), bytes(v("rdmaReceived"))),
+                          (tr("RDMA 端口范围", "RDMA port scope"), meta("rdmaScope"))]
+            }
         case .gpu:
             if windows {
                 stat(tr("利用率", "Utilization"), number(v("usage"), "%", digits: 0), x: 0, y: 0, w: 135)
@@ -338,12 +390,15 @@ import AppKit
             stat(tr("利用率", "Utilization"), number(v("usage"), "%", digits: 0), x: 0, y: 0, w: 130)
             let unified = stat(tr("统一内存", "Unified memory"), memoryPair(memory?.value("used"), memory?.value("total")), x: 145, y: 0, w: 210)
             unified.toolTip = tr("整机 CPU 与 GPU 共享池的已用 / 总量，不是 GPU 独占内存。", "System-wide CPU/GPU pool: in use / total. Not a GPU-only allocation.")
-            stat(tr("频率", "Clock"), number(v("frequency"), " MHz", digits: 0), x: 0, y: 56, w: 160)
+            stat(localMac ? tr("GPU 驱动内存", "GPU driver memory") : tr("频率", "Clock"), localMac ? bytes(v("allocated")) : number(v("frequency"), " MHz", digits: 0), x: 0, y: 56, w: localMac ? 230 : 160)
             if let power { stat(tr("功耗", "Power"), number(power, " W"), x: 0, y: 112, w: 130) }
-            stat(tr("温度", "Temperature"), number(v("temperature"), " °C", digits: 0), x: power == nil ? 0 : 145, y: 112, w: 130)
+            if !localMac || v("temperature") != nil { stat(tr("温度", "Temperature"), number(v("temperature"), " °C", digits: 0), x: power == nil ? 0 : 145, y: 112, w: 130) }
             factsX = 362; keyWidth = zh ? 106 : 112
             facts = [(tr("驱动版本", "Driver version"), meta("driver")),
                      (tr("内存架构", "Memory model"), tr("CPU / GPU 共享", "CPU / GPU shared")), (tr("PCI 位置", "PCI location"), meta("pci"))]
+            if localMac {
+                facts = [(tr("GPU 核心", "GPU cores"), meta("cores")), (tr("内存架构", "Memory model"), tr("CPU / GPU 共享", "CPU / GPU shared"))]
+            }
             }
         }
         for (i, fact) in facts.enumerated() {
@@ -374,9 +429,9 @@ import AppKit
         let kind = selected?.kind
         switch kind {
         case .cpu:
-            let height = h - (windows ? 270 : 326)
+            let height = h - (windows ? 270 : (localMac ? 300 : 326))
             if state.profile.logicalCPU {
-                let columns = windows ? (charts.count > 16 ? 8 : 4) : 5
+                let columns = windows ? (charts.count > 16 ? 8 : 4) : (localMac ? (charts.count <= 12 ? 4 : 5) : 5)
                 let rowCount = CGFloat((charts.count + columns - 1) / columns), cellW = (w - CGFloat(columns - 1) * 4) / CGFloat(columns)
                 let cellH = (height - (rowCount - 1) * 5) / max(1, rowCount)
                 frames = charts.indices.map { NSRect(x: CGFloat($0 % columns) * (cellW + 4), y: top + CGFloat($0 / columns) * (cellH + 5), width: cellW, height: cellH) }
@@ -391,8 +446,11 @@ import AppKit
             frames.append(NSRect(x: 0, y: frames[0].maxY + 45, width: w, height: 75))
             newStatsTop = frames[1].maxY + 28
         case .network:
-            frames = [NSRect(x: 0, y: top, width: w, height: h - 376)]
-            newStatsTop = frames[0].maxY + 32
+            if selected.map(hasRDMA) == true {
+                let height = (h - 440) / 2
+                frames = [NSRect(x: 0, y: top, width: w, height: height), NSRect(x: 0, y: top + height + 44, width: w, height: height)]
+            } else { frames = [NSRect(x: 0, y: top, width: w, height: h - 376)] }
+            newStatsTop = frames.last!.maxY + 32
         case .gpu:
             let half = (w - 10) / 2
             let gpuTop = top + 8
@@ -409,7 +467,7 @@ import AppKit
             chart.frame = frames[i]
             let title = chartTitles[i], scale = chartScales[i], time = chartTimes[i], zero = chartZeros[i]
             let logical = kind == .cpu && state.profile.logicalCPU
-            title.isHidden = (logical && i != 0) || (windows && kind == .gpu && i < 4); scale.isHidden = logical && i != charts.count - 1
+            title.isHidden = (logical && i != 0) || ((windows || localMac) && kind == .gpu && i < 4); scale.isHidden = logical && i != charts.count - 1
             if logical {
                 title.frame = NSRect(x: 0, y: top - 22, width: w * 0.7, height: 19)
                 scale.frame = NSRect(x: w * 0.7, y: top - 22, width: w * 0.3, height: 19)

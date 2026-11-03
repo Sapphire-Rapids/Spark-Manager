@@ -15,7 +15,7 @@ All reads are unprivileged. Null means unavailable; it is never converted to zer
 | Disk capacity/free | Physical sectors plus `statvfs` for the disk's mounted filesystems, deduplicated by major:minor. “Free” is filesystem space available to the user. |
 | Disk temperature | NVMe `Composite` hwmon sensor whose parent device matches that disk. |
 | Network | Per-interface receive/transmit byte deltas and error/drop counters; link speed and state from sysfs. Each logical interface has its own page. |
-| RDMA | Interface mapping via `gid_attrs/ndevs`; `port_xmit_data` and `port_rcv_data` count four-byte units, converted to cumulative bytes. These overlap the fabric's network traffic and should not be summed with Ethernet totals. |
+| RDMA | Interface mapping via `gid_attrs/ndevs`; `port_xmit_data` and `port_rcv_data` count four-byte units. Counter deltas divided by monotonic elapsed time produce a separate RDMA throughput chart; details also show cumulative bytes. Counters cover the whole HCA port, including any other interfaces mapped to that port. RDMA and network-interface counters are never added together because their coverage can overlap. |
 | GPU | `nvidia-smi` utilization, memory activity, temperature, graphics clock and power. Memory activity is interface activity, **not allocated memory capacity**. Power is the driver reading, not CPU or wall power. |
 
 Spark CPU/GPU share physical memory. The memory page is the common pool; the GPU page does not fabricate a dedicated VRAM allocation. Unsupported Windows-specific fields such as separate 3D/Copy engine percentages are not synthesized.
@@ -38,9 +38,50 @@ Network metadata comes from NetworkManager (`nmcli device show`) and sysfs. Wi-F
 
 - CPU: one persistent PDH query samples `Processor Information` total and each logical processor's processor/user/privileged time on the same collection tick. Speed uses processor frequency × percent processor performance. Processes, threads and handles use `GetPerformanceInfo`; topology and base clock use CIM. Windows ACPI thermal-zone readings are not treated as reliable CPU temperatures. CPU temperature is not collected or displayed on Windows.
 - Memory: OS-visible physical total/available, commit and pools use `GetPerformanceInfo`. In use excludes the modified list from total − available; cached = standby + modified. Composition uses in-use, modified, standby and free/zero-page lists. Installed capacity, timings and slots use SMBIOS via CIM. Hardware reserved = installed − OS-visible total. Compressed-store size is not collected.
-- Disk: native physical-disk counters provide idle time (active = 100 − idle, bounded 0–100), read/write bytes/sec and average transfer latency. Storage cmdlets provide drive letters, volume sizes and low-frequency reliability temperature. Storage and ACPI sensors refresh in a separate in-process runspace every 15 seconds. Hardware inventory is discovered on connection; reconnect after changing installed devices.
+- Disk: native physical-disk counters provide idle time (active = 100 − idle, bounded 0–100), read/write bytes/sec and average transfer latency. Storage cmdlets provide drive letters, volume sizes and low-frequency reliability temperature. Volume size/free space and storage temperatures refresh in a separate in-process runspace every 15 seconds. Hardware inventory is discovered on connection; reconnect after changing installed devices.
 - Network: .NET network interfaces provide byte-counter deltas over actual elapsed time, addresses, speed, errors and drops. Native WLAN connection queries provide SSID, signal percentage and negotiated rates when connected and permitted by Windows privacy settings. Virtual/disconnected interfaces remain available in Edit.
 - GPU: DXGI enumerates adapters and memory capacities; PDH groups per-process engine activity by adapter LUID and physical engine, then uses the busiest engine for overall utilization. Different engines are never summed into a false overall percentage. Adapters without GPU-engine counter instances (including session mirrors) are not presented as additional physical GPUs. Dedicated/shared allocations are WDDM figures and overlap the machine's physical memory; do not add them to system memory usage. Temperature uses `D3DKMTQueryAdapterInfo`, DirectX feature level uses `D3D12CreateDevice` capability testing without device creation, and PCI location uses D3DKMT. The native adapter performance `Power` percentage is **not watts** and is not exposed as power draw.
+- GPU identity: a PNP ID is retained only for an unambiguous one-to-one model match. Identical-model or unmatched adapters use their unique DXGI LUID, so their samples remain separate. LUID-based visibility/order preferences can reset after a Windows reboot.
 - Commands run without a PTY and emit UTF-8 JSON. The native declarations use only Windows libraries. No third-party monitoring driver or persistent service is installed.
 
 Sources: [PDH English counters](https://learn.microsoft.com/en-us/windows/win32/api/pdh/nf-pdh-pdhaddenglishcounterw), [GPU engine semantics](https://devblogs.microsoft.com/directx/gpus-in-the-task-manager/), [GPU temperature and power units](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/d3dkmthk/ns-d3dkmthk-_d3dkmt_adapter_perfdata), [storage reliability](https://learn.microsoft.com/en-us/powershell/module/storage/get-storagereliabilitycounter), [DirectX capability query](https://learn.microsoft.com/en-us/windows/win32/api/d3d12/nf-d3d12-d3d12createdevice).
+
+## Local Mac / 本机
+
+The pinned “This Mac” entry samples directly with Mach, sysctl, IOKit,
+getifaddrs, SystemConfiguration and CoreWLAN. It requires no SSH server,
+agent, administrator rights or additional software. Remote host profiles
+remain unchanged; local hardware visibility/order and CPU chart mode persist.
+
+- CPU: differences of Mach per-processor ticks; system and user + nice sum to
+  utilization. The first sample has no utilization/rate baseline. Sleep gaps
+  restart the baseline. IOReport reports active-state residency-weighted performance/efficiency core
+  frequencies, using firmware DVFS tables (tested on M3). Idle clusters have no
+  active frequency and show unavailable rather than an invented minimum.
+  IOReport is a private system API and requires no elevated helper.
+- CPU process count uses the filled PID enumeration, rather than its buffer-size
+  estimate. Cache totals sum all performance/efficiency core groups: L1 includes
+  instruction and data caches per core; shared L2/L3 is counted once per group.
+  Uptime and sampling intervals use the monotonic raw clock, which includes sleep.
+- Memory: estimated app pages = internal − purgeable, bounded at zero;
+  memory used = app + wired + physical compressor pages. Available is the
+  remainder of physical RAM, not Linux MemAvailable. Swap is reported by sysctl.
+- Physical disks: IOBlockStorageDriver read/write byte deltas and mean request
+  service time. Busy percentage is deliberately not derived by summing overlapping
+  requests. The upper chart shows IOPS and the lower chart shows read/write throughput.
+  A one-time built-in diskutil query identifies the system APFS physical store,
+  so its capacity/free-space values appear on the corresponding disk page.
+- Network: 64-bit `NET_RT_IFLIST2` interface counters and link speed, with byte
+  deltas divided by actual sample duration. Physical active
+  interfaces appear by default; virtual interfaces are available in Edit.
+  macOS may withhold Wi-Fi SSID without location permission; no permission is requested.
+- GPU: IOKit driver Device/Renderer/Tiler utilization when available. These are
+  driver-reported counters and may vary across macOS releases. Video utilization,
+  temperature and power are not fabricated. Unified memory is the whole-system
+  pool; GPU driver memory is a separate reported allocation, not extra RAM.
+
+Memory charts retain their last known capacity when disconnected. Historical
+samples keep the same scale while current readings remain unavailable.
+
+本机固定显示在机器列表首位。无法可靠读取的温度、功耗不显示；磁盘图显示 IOPS 和读写速度，
+不将并行请求耗时冒充活动时间。统一内存不会重复计入 GPU 内存。

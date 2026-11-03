@@ -106,3 +106,21 @@ All screenshots below use clearly labeled synthetic data, not a real machine.
 ![Light, English](docs/screenshots/light-en.png)
 ![Dark, Chinese, logical processors](docs/screenshots/dark-zh-cores.png)
 ![Two machines](docs/screenshots/wide-two-machines.png)
+
+### 本机监控 / Local monitoring
+
+启动后左侧顶部固定显示“本机”，无需 SSH 配置即可监控当前 Mac 的 CPU、统一内存、
+磁盘读写、网络和可读取的 GPU 指标。本机也支持硬件显示/隐藏、排序和每核图表。
+
+“This Mac” is pinned first and starts sampling automatically, without SSH or
+additional software. See [metric definitions](docs/metrics.md) for macOS data
+sources and unavailable measurements.
+
+### 刷新连接 / Refresh connections
+
+右上角“刷新连接”（⌘R）重新连接所有机器并保留图表历史与设置。睡眠时暂停采集，
+唤醒后恢复睡眠前的活动连接；手动断开的连接不会因唤醒自动连接。
+
+Use **Refresh connections** (⌘R) to reconnect all hosts without restarting the app.
+Sleep/wake automatically restores previously active connections. Authentication
+and host-key failures still require correction and are not retried automatically.

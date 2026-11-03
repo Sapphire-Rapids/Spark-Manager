@@ -40,8 +40,9 @@ enum CredentialStore {
     var error: String?
     var lastReceived: Date?
     var task: Task<Void, Never>?
-    var collector: SSHPerformanceCollector?
+    var collector: (any MetricsCollecting)?
     var generation = UUID()
+    var connectingSince: Date?
     init(_ profile: HostProfile) { self.profile = profile }
     var live: Bool { status == "connected" && (lastReceived.map { Date().timeIntervalSince($0) < 4 } ?? false) }
     var latest: MetricsSnapshot? { live ? history.last?.snapshot : nil }
@@ -85,12 +86,15 @@ enum CredentialStore {
     var panes = PaneSelection()
     var onChange: (() -> Void)?
     var demo = false
+    private var resumeAfterSleep: Set<UUID> = []
+    private var sleeping = false
     let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("SparkMonitorPreview")
     func load() {
         do {
             let file = directory.appendingPathComponent("preferences.json")
             if FileManager.default.fileExists(atPath: file.path) { preferences = try JSONDecoder().decode(Preferences.self, from: Data(contentsOf: file)) }
-            hosts = preferences.hosts.map(HostState.init)
+            let local = preferences.hosts.first { $0.isLocal } ?? .local
+            hosts = [HostState(local)] + preferences.hosts.filter { !$0.isLocal }.map(HostState.init)
         } catch { showError(error.localizedDescription) }
     }
     func save() {
@@ -107,16 +111,16 @@ enum CredentialStore {
         onChange?()
     }
     func connect(_ state: HostState) {
-        guard !demo else { return }
+        guard !demo, !sleeping else { return }
         disconnect(state)
         let generation = UUID(); state.generation = generation
-        state.status = "connecting"; state.error = nil
+        state.status = "connecting"; state.error = nil; state.connectingSince = Date()
         onChange?()
         state.task = Task { [weak self, weak state] in
-            guard let self, let state else { return }
+            guard let self, let state, state.generation == generation, !Task.isCancelled else { return }
             do {
-                let secret = try CredentialStore.load(state.profile.id)
-                let collector = SSHPerformanceCollector()
+                let secret = state.profile.isLocal ? nil : try CredentialStore.load(state.profile.id)
+                let collector: any MetricsCollecting = state.profile.isLocal ? LocalMacCollector() : SSHPerformanceCollector()
                 state.collector = collector
                 try await collector.start(profile: state.profile, secret: secret, trust: { fingerprint in
                     guard state.generation == generation else { return false }
@@ -153,11 +157,42 @@ enum CredentialStore {
                     try? await Task.sleep(for: .seconds(5))
                     guard state.generation == generation, !Task.isCancelled else { return }
                     self.connect(state)
+                } else {
+                    state.task = nil
                 }
             }
         }
     }
+    func refreshConnections() {
+        guard !demo, !sleeping else { return }
+        hosts.forEach(connect)
+    }
+    func suspendForSleep() {
+        guard !demo else { return }
+        sleeping = true
+        let active = hosts.filter { $0.task != nil }
+        active.forEach(disconnect)
+        resumeAfterSleep = Set(active.map { $0.profile.id })
+        onChange?()
+    }
+    func resumeFromSleep() {
+        guard !demo else { return }
+        sleeping = false
+        let ids = resumeAfterSleep
+        resumeAfterSleep.removeAll()
+        hosts.filter { ids.contains($0.profile.id) }.forEach(connect)
+    }
+    func reconnectStalledCollectors(now: Date = Date()) {
+        guard !demo, !sleeping else { return }
+        for state in hosts {
+            let stalled = state.status == "connected" && now.timeIntervalSince(state.lastReceived ?? now) > 6
+            let starting = state.status == "connecting" && now.timeIntervalSince(state.connectingSince ?? now) > 60
+            if stalled || starting { connect(state) }
+        }
+    }
     func disconnect(_ state: HostState) {
+        resumeAfterSleep.remove(state.profile.id)
+        state.connectingSince = nil
         state.generation = UUID()
         state.task?.cancel(); state.task = nil
         if let collector = state.collector { Task { await collector.stop() } }

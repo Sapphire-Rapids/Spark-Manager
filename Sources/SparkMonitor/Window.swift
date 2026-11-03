@@ -31,6 +31,7 @@ import AppKit
     let language = NSSegmentedControl(labels: ["中文", "EN"], trackingMode: .selectOne, target: nil, action: nil)
     let more = NSButton()
     let add = NSButton()
+    let refreshButton = NSButton()
     let hamburger = NSButton()
     let settings = NavigationRow()
     let tabs = NSScrollView()
@@ -45,7 +46,12 @@ import AppKit
     var navigationWidth: CGFloat = 268
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
-        [heading, language, more, add, hamburger, settings, tabs, emptyLabel, emptyDetail, emptyAdd].forEach(addSubview)
+        [heading, language, more, add, refreshButton, hamburger, settings, tabs, emptyLabel, emptyDetail, emptyAdd].forEach(addSubview)
+        refreshButton.target = self; refreshButton.action = #selector(refreshConnections)
+        refreshButton.isBordered = false; refreshButton.font = .systemFont(ofSize: 14)
+        refreshButton.image = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: nil)
+        refreshButton.imagePosition = .imageLeading
+        refreshButton.keyEquivalent = "r"; refreshButton.keyEquivalentModifierMask = .command
         language.target = self; language.action = #selector(changeLanguage)
         add.target = self; add.action = #selector(addHost); add.isBordered = false; add.font = .systemFont(ofSize: 14)
         add.image = NSImage(systemSymbolName: "plus.rectangle.on.rectangle", accessibilityDescription: nil); add.imagePosition = .imageLeading
@@ -72,6 +78,10 @@ import AppKit
         window?.title = tr("DGX Spark管理器", "Spark Manager")
         heading.stringValue = model.demo ? tr("性能（演示数据）", "Performance (demo)") : tr("性能", "Performance")
         language.selectedSegment = model.preferences.language == "zh" ? 0 : 1
+        refreshButton.title = tr("刷新连接", "Refresh connections")
+        refreshButton.setAccessibilityLabel(refreshButton.title)
+        refreshButton.toolTip = tr("重新连接所有机器（⌘R）", "Reconnect all machines (⌘R)")
+        refreshButton.isEnabled = !model.demo
         add.title = tr("添加机器", "Add machine")
         settings.caption = tr("设置", "Settings"); settings.setAccessibilityLabel(settings.caption)
         more.setAccessibilityLabel(tr("更多选项", "More options"))
@@ -84,9 +94,9 @@ import AppKit
             lastStructure = structure
             tabButtons.forEach { $0.removeFromSuperview() }; tabButtons.removeAll()
             for (index, state) in model.hosts.enumerated() {
-                let button = NavigationRow(); button.isBordered = false; button.caption = state.profile.name
+                let button = NavigationRow(); button.isBordered = false; button.caption = state.profile.displayName; button.symbol = state.profile.isLocal ? "laptopcomputer" : "desktopcomputer"
                 button.target = self; button.action = #selector(selectHost(_:)); button.tag = index
-                button.setAccessibilityLabel(state.profile.name); button.toolTip = state.profile.name
+                button.setAccessibilityLabel(state.profile.displayName); button.toolTip = state.profile.displayName
                 tabContent.addSubview(button); tabButtons.append(button)
             }
         }
@@ -108,7 +118,7 @@ import AppKit
             let host = model.hosts[index]
             tab.selected = model.panes.focused == host.profile.id
             tab.online = host.live
-            tab.toolTip = host.profile.name + "\n" + (host.live ? tr("已连接", "Connected") : host.error ?? tr("未连接", "Disconnected"))
+            tab.toolTip = host.profile.displayName + "\n" + (host.live ? tr("已连接", "Connected") : host.error ?? tr("未连接", "Disconnected"))
             tab.needsDisplay = true
         }
     }
@@ -117,7 +127,8 @@ import AppKit
         let compact = collapsed ?? (bounds.width < 1140)
         navigationWidth = compact ? 48 : 268
         let bodyWidth = bounds.width - navigationWidth
-        heading.frame = NSRect(x: navigationWidth + 19, y: 41, width: 235, height: 24)
+        heading.frame = NSRect(x: navigationWidth + 19, y: 41, width: 110, height: 24)
+        refreshButton.frame = NSRect(x: bounds.width - 414, y: 39, width: 160, height: 29)
         add.frame = NSRect(x: bounds.width - 254, y: 39, width: 128, height: 29)
         language.frame = NSRect(x: bounds.width - 122, y: 42, width: 80, height: 24)
         more.frame = NSRect(x: bounds.width - 40, y: 35, width: 35, height: 33)
@@ -142,6 +153,7 @@ import AppKit
     @objc func changeLanguage() { model.preferences.language = language.selectedSegment == 0 ? "zh" : "en"; model.save(); refresh() }
     @objc func toggleNavigation() { collapsed = !(navigationWidth == 48); needsLayout = true; needsDisplay = true }
     @objc func selectHost(_ button: NSButton) { model.panes.select(model.hosts[button.tag].profile.id); needsLayout = true }
+    @objc func refreshConnections() { model.refreshConnections() }
     @objc func addHost() { editHost(nil) }
     @objc func openSettings() { editHost(model.hosts.first { $0.profile.id == model.panes.focused }) }
     @objc func showMore() {

@@ -30,17 +30,21 @@ function EngineGroups($readings,$gpu) {
     }
     $result
 }
-# Slow storage reliability queries run in a separate in-process runspace, so
+# Slow storage reliability and volume queries run in a separate in-process runspace, so
 # they cannot pause the one-second PDH stream.
 $sensorScript = {
-    param($physicalDisks)
+    param($physicalDisks,$disks)
     $global:ProgressPreference='SilentlyContinue'
     $diskTemps=@{}
     foreach ($pd in $physicalDisks) {
         $reading=$pd | Get-StorageReliabilityCounter -ErrorAction SilentlyContinue
         if ($null -ne $reading.Temperature -and $reading.Temperature -gt 0) { $diskTemps[[string]$pd.DeviceId]=[double]$reading.Temperature }
     }
-    @{disk=$diskTemps}
+    $volumesByDisk=@{}
+    foreach ($disk in $disks) {
+        $volumesByDisk[[string]$disk.Number]=@(Get-Partition -DiskNumber $disk.Number | Get-Volume -ErrorAction SilentlyContinue | Where-Object {$_.Size -gt 0})
+    }
+    @{disk=$diskTemps;volumes=$volumesByDisk}
 }
 $script:diskTemps=@{}
 function Discover {
@@ -93,8 +97,11 @@ function Discover {
     $engineValues=$counter.Values('engines')
     for ($i=0;$i -lt $script:gpus.Count;$i++) {
         $gpu=$script:gpus[$i]
-        $driver=$video | Where-Object {$_.Name -eq $gpu.Name} | Select-Object -First 1
-        $script:gpuIDs[$gpu.Tag]='gpu:'+[string]$driver.PNPDeviceID
+        $drivers=@($video | Where-Object {$_.Name -eq $gpu.Name})
+        $sameModel=@($script:gpus | Where-Object {$_.Name -eq $gpu.Name})
+        $driver=if ($drivers.Count -eq 1 -and $sameModel.Count -eq 1) {$drivers[0]} else {$null}
+        # Preserve stable PNP IDs only for one-to-one matches; DXGI/PDH's LUID stays unique otherwise.
+        $script:gpuIDs[$gpu.Tag]='gpu:'+$(if ($driver.PNPDeviceID) {[string]$driver.PNPDeviceID} else {$gpu.Tag})
         $meta=@{platform='windows';index=[string]$i;dedicatedTotal=[string]$gpu.Dedicated;sharedTotal=[string]$gpu.Shared;directX=[string]$gpu.DirectX;pci=[string]$gpu.PCI;driver=[string]$driver.DriverVersion;driverDate=$(if($driver.DriverDate){$driver.DriverDate.ToString('yyyy/M/d')}else{''})}
         foreach ($e in (EngineGroups $engineValues $gpu).GetEnumerator()) { $meta[$e.Key]=$e.Value.name }
         $devices.Add((Device $script:gpuIDs[$gpu.Tag] 'gpu' ('GPU '+$i) $gpu.Name ($gpu.Vendor -ne 0x1414) $meta))
@@ -109,7 +116,7 @@ try {
     $counter.Collect()
     Discover
     $sensorWorker=[PowerShell]::Create()
-    [void]$sensorWorker.AddScript($sensorScript.ToString()).AddArgument($script:physicalDisks)
+    [void]$sensorWorker.AddScript($sensorScript.ToString()).AddArgument($script:physicalDisks).AddArgument($script:disks)
     $sensorTask=$sensorWorker.BeginInvoke()
     $lastSensor=[Diagnostics.Stopwatch]::StartNew()
     $lastNet=@{}; $lastTime=[Diagnostics.Stopwatch]::StartNew(); $tick=0
@@ -118,7 +125,7 @@ try {
         $counter.Collect()
         if ($null -ne $sensorTask -and $sensorTask.IsCompleted) {
             $result=$sensorWorker.EndInvoke($sensorTask)
-            if ($result.Count -gt 0) { $script:diskTemps=$result[0].disk }
+            if ($result.Count -gt 0) { $script:diskTemps=$result[0].disk; $script:diskVolumes=$result[0].volumes }
             $sensorTask=$null
         }
         if ($null -eq $sensorTask -and $lastSensor.Elapsed.TotalSeconds -ge 15) {
@@ -138,7 +145,11 @@ try {
         foreach ($disk in $script:disks) {
             $index=[string]$disk.Number; $instance=$idle.Keys | Where-Object {($_ -split ' ')[0] -eq $index} | Select-Object -First 1
             $volumes=$script:diskVolumes[$index]
-            $metrics['disk:'+$index]=@{values=@{usage=$(if($instance){Clamp (100-$idle[$instance])}else{$null});read=$(if($instance){$read[$instance]}else{$null});write=$(if($instance){$write[$instance]}else{$null});latency=$(if($instance){$latency[$instance]*1000}else{$null});capacity=[double]$disk.Size;total=($volumes | Measure-Object Size -Sum).Sum;free=($volumes | Measure-Object SizeRemaining -Sum).Sum;temperature=$script:diskTemps[$index]}}
+            $volumeTotal=$null; $volumeFree=$null
+            if ($volumes.Count -gt 0) {
+                $volumeTotal=($volumes | Measure-Object Size -Sum).Sum; $volumeFree=($volumes | Measure-Object SizeRemaining -Sum).Sum
+            }
+            $metrics['disk:'+$index]=@{values=@{usage=$(if($instance){Clamp (100-$idle[$instance])}else{$null});read=$(if($instance){$read[$instance]}else{$null});write=$(if($instance){$write[$instance]}else{$null});latency=$(if($instance){$latency[$instance]*1000}else{$null});capacity=[double]$disk.Size;total=$volumeTotal;free=$volumeFree;temperature=$script:diskTemps[$index]}}
         }
         $elapsed=$lastTime.Elapsed.TotalSeconds; $lastTime.Restart()
         foreach ($net in [Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces()) {

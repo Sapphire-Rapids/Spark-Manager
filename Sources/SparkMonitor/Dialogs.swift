@@ -2,6 +2,7 @@ import AppKit
 
 @MainActor extension DashboardView {
     func editHost(_ state: HostState?) {
+        if state?.profile.isLocal == true { showMore(); return }
         let original = state?.profile
         let alert = NSAlert()
         alert.messageText = original == nil ? tr("添加机器", "Add machine") : tr("连接设置", "Connection settings")

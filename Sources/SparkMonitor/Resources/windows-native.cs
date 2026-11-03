@@ -165,7 +165,18 @@ public static class SparkNative {
                 result["signal"]=Marshal.ReadInt32(data,576);
                 result["rxSpeed"]=Marshal.ReadInt32(data,580)/1000.0; result["txSpeed"]=Marshal.ReadInt32(data,584)/1000.0;
                 int phy=Marshal.ReadInt32(data,568);
-                result["protocol"]=phy==11?"802.11ax":phy==10?"802.11ac":phy==9?"802.11n":phy==12?"802.11be":"Wi-Fi";
+                // DOT11_PHY_TYPE: HT=7, VHT=8, DMG=9, HE=10, EHT=11.
+                switch(phy) {
+                    case 4: result["protocol"]="802.11a"; break;
+                    case 5: result["protocol"]="802.11b"; break;
+                    case 6: result["protocol"]="802.11g"; break;
+                    case 7: result["protocol"]="802.11n"; break;
+                    case 8: result["protocol"]="802.11ac"; break;
+                    case 9: result["protocol"]="802.11ad"; break;
+                    case 10: result["protocol"]="802.11ax"; break;
+                    case 11: result["protocol"]="802.11be"; break;
+                    default: result["protocol"]="Wi-Fi"; break;
+                }
             } finally { WlanFreeMemory(data); }
         } finally { WlanCloseHandle(handle,IntPtr.Zero); }
         return result;

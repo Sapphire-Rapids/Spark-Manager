@@ -64,6 +64,18 @@ def net_counters():
     return result
 
 
+def rdma_counters(inv):
+    ports = {p for dev in inv['devices'] if dev['kind'] == 'network'
+             for p in json.loads(dev['metadata']['rdma_ports'])}
+    result = {}
+    for port in ports:
+        result[port] = {}
+        for field, source in [('send', 'port_xmit_data'), ('receive', 'port_rcv_data')]:
+            value = read(Path(port) / 'counters' / source)
+            result[port][field] = int(value) * 4 if value is not None else None
+    return result
+
+
 def memory():
     return {k: float(v.split()[0]) * 1024 for line in Path('/proc/meminfo').read_text().splitlines() for k, v in [line.split(':', 1)]}
 
@@ -162,6 +174,11 @@ def inventory():
         disk_index += 1
     address_data = json.loads(command(['ip', '-j', 'addr']) or '[]')
     network_details = network_metadata()
+    rdma_links = {}
+    for port in sorted(Path('/sys/class/infiniband').glob('*/ports/*')):
+        interfaces = sorted({name for gid in (port / 'gid_attrs/ndevs').glob('*') if (name := read(gid))})
+        for name in interfaces:
+            rdma_links.setdefault(name, []).append((port, interfaces))
     for net in sorted(Path('/sys/class/net').iterdir()):
         if net.name == 'lo':
             continue
@@ -182,12 +199,11 @@ def inventory():
             meta['protocol'] = next((version for marker, version in [('EHT-', '802.11be'), ('HE-', '802.11ax'), ('VHT-', '802.11ac'), ('MCS', '802.11n')] if marker in bitrates), 'Wi-Fi')
         driver = (net / 'device/driver').resolve().name if physical else ''
         adapter_model = {'mlx5_core': 'NVIDIA ConnectX-7', 'mt7925e': 'MediaTek Wi-Fi 7 MT7925', 'r8127': 'Realtek RTL8127'}.get(driver, meta['type'])
-        rdma = []
-        for hca in Path('/sys/class/infiniband').glob('*'):
-            for gid in hca.glob('ports/*/gid_attrs/ndevs/*'):
-                if read(gid) == net.name:
-                    rdma.append(str(gid.parents[2])); break
-        meta['rdma_ports'] = json.dumps(rdma)
+        rdma = rdma_links.get(net.name, [])
+        meta['rdma_ports'] = json.dumps([str(port) for port, _ in rdma])
+        if rdma:
+            meta['rdmaScope'] = '; '.join(f'{port.parents[1].name}/{port.name}: whole port ({", ".join(names)})'
+                                         for port, names in rdma)
         devices.append(dict(id='net:' + net.name, kind='network', name=net.name, model=adapter_model,
                             defaultVisible=physical and read(net / 'operstate') == 'up', metadata=meta))
     raw = command(['nvidia-smi', '--query-gpu=index,uuid,name,driver_version,pci.bus_id', '--format=csv,noheader,nounits'])
@@ -208,8 +224,8 @@ def gpu_metrics():
 
 def sample(inv, previous):
     now = time.monotonic()
-    cpu, disks, nets = cpu_counters(), disk_counters(), net_counters()
-    old_time, old_cpu, old_disks, old_nets = previous
+    cpu, disks, nets, rdmas = cpu_counters(), disk_counters(), net_counters(), rdma_counters(inv)
+    old_time, old_cpu, old_disks, old_nets, old_rdmas = previous
     dt = now - old_time
     mem = memory()
     zones = thermal_zones()
@@ -272,12 +288,15 @@ def sample(inv, previous):
                     vals[field] = numeric(value[0]) if value else None
             ports = json.loads(meta['rdma_ports'])
             if ports:
-                for field, source in [('rdmaSent', 'port_xmit_data'), ('rdmaReceived', 'port_rcv_data')]:
-                    readings = [numeric(read(Path(p) / 'counters' / source)) for p in ports]
-                    vals[field] = sum(v * 4 for v in readings if v is not None) if any(v is not None for v in readings) else None
+                for field, total_field, source in [('rdmaSend', 'rdmaSent', 'send'), ('rdmaReceive', 'rdmaReceived', 'receive')]:
+                    readings = [rdmas[p][source] for p in ports]
+                    vals[total_field] = sum(readings) if all(v is not None for v in readings) else None
+                    deltas = [rate(old, cur, dt) if old is not None and cur is not None else None
+                              for p in ports for old, cur in [(old_rdmas.get(p, {}).get(source), rdmas[p][source])]]
+                    vals[field] = sum(deltas) if all(v is not None for v in deltas) else None
             metrics[dev['id']] = {'values': vals}
     metrics.update(gpu_metrics())
-    return {'timestamp': time.time(), 'uptime': float(Path('/proc/uptime').read_text().split()[0]), 'devices': metrics}, (now, cpu, disks, nets)
+    return {'timestamp': time.time(), 'uptime': float(Path('/proc/uptime').read_text().split()[0]), 'devices': metrics}, (now, cpu, disks, nets, rdmas)
 
 
 def main():
@@ -286,7 +305,7 @@ def main():
     ctypes.CDLL(None).prctl(1, signal.SIGHUP)
     inv = inventory()
     print(json.dumps({'inventory': inv}), flush=True)
-    previous = (time.monotonic(), cpu_counters(), disk_counters(), net_counters())
+    previous = (time.monotonic(), cpu_counters(), disk_counters(), net_counters(), rdma_counters(inv))
     tick = 0
     while True:
         start = time.monotonic()

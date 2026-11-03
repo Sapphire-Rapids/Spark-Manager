@@ -17,6 +17,10 @@ struct HostProfile: Codable, Identifiable, Equatable {
     var deviceOrder: [String]?
     var platform: String?
     var gpuGraphs: [String: [String]]?
+    var isLocal: Bool { platform == "macos" }
+    @MainActor var displayName: String { isLocal ? tr("本机", "This Mac") : name }
+    static let localID = UUID(uuidString: "00000000-0000-4000-8000-000000000001")!
+    static var local: HostProfile { HostProfile(id: localID, name: "This Mac", host: "localhost", username: "", platform: "macos") }
 }
 struct HardwareDevice: Codable, Identifiable, Equatable {
     let id: String

@@ -33,14 +33,17 @@ import AppKit
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
                 if model.demo { model.tickDemo() }
-                for state in model.hosts where !model.demo && state.status == "connected" && Date().timeIntervalSince(state.lastReceived ?? Date()) > 6 {
-                    model.connect(state)
-                }
+                model.reconnectStalledCollectors()
                 self?.dashboard.refresh()
             }
         }
+        let workspace = NSWorkspace.shared.notificationCenter
+        workspace.addObserver(self, selector: #selector(willSleep), name: NSWorkspace.willSleepNotification, object: nil)
+        workspace.addObserver(self, selector: #selector(didWake), name: NSWorkspace.didWakeNotification, object: nil)
         if !model.demo { model.hosts.forEach(model.connect) }
     }
+    @objc func willSleep() { AppModel.shared.suspendForSleep() }
+    @objc func didWake() { AppModel.shared.resumeFromSleep() }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
     func renderPreviews(to directory: URL) {
         let model = AppModel.shared
@@ -51,6 +54,8 @@ import AppKit
                 ("memory-zh", "light", "zh", false, "memory", 1280.0),
                 ("disk-zh", "light", "zh", false, "disk:demo", 1280.0),
                 ("network-zh", "light", "zh", false, "net:demo", 1280.0),
+                ("rdma-zh", "light", "zh", false, "net:rdma", 1280.0),
+                ("rdma-en", "light", "en", false, "net:rdma", 1280.0),
                 ("gpu-zh", "light", "zh", false, "gpu:demo", 1280.0),
                 ("light-en", "light", "en", false, "cpu", 1280.0),
                 ("dark-zh-cores", "dark", "zh", true, "cpu", 1280.0),
@@ -68,6 +73,7 @@ import AppKit
         } catch { fputs("Preview export failed: \(error)\n", stderr) }
     }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        NSWorkspace.shared.notificationCenter.removeObserver(self)
         timer?.invalidate(); AppModel.shared.save()
         Task { await AppModel.shared.shutdown(); sender.reply(toApplicationShouldTerminate: true) }
         return .terminateLater

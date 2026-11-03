@@ -67,19 +67,22 @@ final class HostKeyCheck: NIOSSHClientServerAuthenticationDelegate, @unchecked S
             if profile.platform == "windows" {
                 let native = try resource("windows-native", extension: "cs")
                 let sampler = try resource("windows-collector", extension: "ps1")
-                let script = "$ProgressPreference='SilentlyContinue'\nAdd-Type -TypeDefinition @'\n" + native + "\n'@\n" + sampler
-                let output = try await connection.executeCommand(Self.powershell("[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); [Console]::Write([IO.Path]::GetTempPath())"))
+                let output = try await connection.executeCommand(Self.powershell("[Console]::OutputEncoding=[Text.UTF8Encoding]::new(); [Console]::Write([IO.Path]::GetTempPath())"))
                 let directory = String(buffer: output).trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "\\", with: "/")
-                let path = directory + "SparkManager-" + UUID().uuidString + ".ps1"
+                let filename = "SparkManager-" + UUID().uuidString + ".ps1"
+                let path = directory + filename
+                let script = "$ErrorActionPreference='Stop'; $global:ProgressPreference='SilentlyContinue'\n" +
+                    "Remove-Item -LiteralPath ([IO.Path]::Combine([IO.Path]::GetTempPath(), '\(filename)'))\n" +
+                    "Add-Type -TypeDefinition @'\n" + native + "\n'@\n" + sampler
                 let sftp = try await connection.openSFTP()
                 try await sftp.withFile(filePath: path, flags: [.write, .create, .forceCreate]) { file in
                     try await file.write(ByteBuffer(string: script))
                 }
                 try await sftp.close()
-                let quotedPath = path.replacingOccurrences(of: "'", with: "''")
-                // Windows' command-line limit is too short for the sampler.
-                // Read the temporary upload into memory and delete it before running.
-                command = Self.powershell("$ErrorActionPreference='Stop'; $p='\(quotedPath)'; $s=[IO.File]::ReadAllText($p); Remove-Item -LiteralPath $p; & ([scriptblock]::Create($s))")
+                // Literal bootstrap works with both CMD and PowerShell default shells.
+                // No dollar expressions cross the outer shell; the uploaded sampler
+                // deletes itself after ReadAllText has finished loading it.
+                command = Self.powershell("& ([scriptblock]::Create([IO.File]::ReadAllText([IO.Path]::Combine([IO.Path]::GetTempPath(), '\(filename)'))))")
             } else {
                 let script = try resource("collector", extension: "py")
                 let quoted = "'" + script.replacingOccurrences(of: "'", with: "'\"'\"'") + "'"
@@ -116,7 +119,7 @@ final class HostKeyCheck: NIOSSHClientServerAuthenticationDelegate, @unchecked S
         return try String(contentsOf: url, encoding: .utf8)
     }
     static func powershell(_ script: String) -> String {
-        "cmd.exe /d /c powershell.exe -NoLogo -NoProfile -NonInteractive -OutputFormat Text -InputFormat Text -EncodedCommand " + ("$global:ProgressPreference='SilentlyContinue'; " + script).data(using: .utf16LittleEndian)!.base64EncodedString()
+        "powershell.exe -NoLogo -NoProfile -NonInteractive -OutputFormat Text -Command \"" + script + "\""
     }
     func stop() async {
         stopped = true
@@ -124,7 +127,17 @@ final class HostKeyCheck: NIOSSHClientServerAuthenticationDelegate, @unchecked S
         client = nil
     }
     static func isNetworkError(_ error: Error) -> Bool {
-        if error is SSHClientError { return false }
+        if let error = error as? ChannelError {
+            switch error {
+            case .connectTimeout, .ioOnClosedChannel, .alreadyClosed, .outputClosed, .inputClosed, .eof, .writeHostUnreachable: return true
+            default: return false
+            }
+        }
+        if let error = error as? SSHClientError {
+            if case .channelCreationFailed = error { return true }
+            return false
+        }
+        if let error = error as? SFTPError, case .connectionClosed = error { return true }
         let text = String(describing: error).lowercased()
         return text.contains("connectionreset") || text.contains("connection reset") || text.contains("connection refused") || text.contains("connecttimeout") || text.contains("ioerror") || text.contains("tcpshutdown") || text.contains("ioonclosedchannel") || text.contains("ssh stream closed")
     }
