@@ -1,7 +1,7 @@
 import AppKit
 
 @MainActor enum Style {
-    static var dark: Bool { NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua }
+    static var dark: Bool { NSAppearance.currentDrawing().bestMatch(from: [.darkAqua, .aqua]) == .darkAqua }
     static var surface: NSColor { dark ? NSColor(white: 0.13, alpha: 1) : .white }
     static var sidebar: NSColor { dark ? NSColor(white: 0.16, alpha: 1) : NSColor(srgbRed: 0.947, green: 0.954, blue: 0.960, alpha: 1) }
     static var grid: NSColor { dark ? NSColor(white: 0.20, alpha: 1) : NSColor(white: 0.947, alpha: 1) }
@@ -184,9 +184,11 @@ struct ChartPoint {
         super.layout()
         chart.frame = NSRect(x: 10, y: 11, width: 66, height: 48)
         let textWidth = bounds.width - (editing ? 124 : 94)
-        nameLabel.frame = NSRect(x: 90, y: 5, width: textWidth, height: 24)
-        subtitle.frame = NSRect(x: 90, y: 29, width: textWidth, height: 35)
-        subtitle.maximumNumberOfLines = 2
+        let network = device.kind == .network
+        nameLabel.frame = NSRect(x: 90, y: network ? 2 : 5, width: textWidth, height: 24)
+        subtitle.frame = NSRect(x: 90, y: network ? 24 : 29, width: textWidth, height: network ? 46 : 35)
+        subtitle.font = .systemFont(ofSize: network ? 12 : 13)
+        subtitle.maximumNumberOfLines = network ? 3 : 2
         checkbox.isHidden = !editing; checkbox.state = visible ? .on : .off
         checkbox.frame = NSRect(x: bounds.width - 27, y: 25, width: 21, height: 22)
         checkbox.setAccessibilityLabel(tr("显示", "Show") + " " + deviceTitle(device) + " " + device.name)

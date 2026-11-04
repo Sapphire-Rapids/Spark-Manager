@@ -52,12 +52,20 @@ function Discover {
     $cpus=@(Get-CimInstance Win32_Processor)
     $cores=($cpus | Measure-Object NumberOfCores -Sum).Sum
     $logical=($cpus | Measure-Object NumberOfLogicalProcessors -Sum).Sum
-    $cpuMeta=@{platform='windows';cores=[string]$cores;logicalProcessors=[string]$logical;sockets=[string]$cpus.Count;baseFrequency=[string]$cpus[0].MaxClockSpeed;virtualization=[string]$cpus[0].VirtualizationFirmwareEnabled}
+    # Freeze complete PDH identities once; invalid samples must never renumber later cores.
+    $script:coreKeys=@($counter.NullableValues('cpu').Keys | Where-Object {$_ -match '^\d+,\d+$'} | Sort-Object {[int]($_.Split(',')[0])},{[int]($_.Split(',')[1])})
+    if ($script:coreKeys.Count -ne $logical) { throw "PDH returned $($script:coreKeys.Count) processor instances; expected $logical" }
+    $computer=Get-CimInstance Win32_ComputerSystem
+    $virtualization=$computer.HypervisorPresent -or @($cpus | Where-Object {$_.VirtualizationFirmwareEnabled -eq $true}).Count -gt 0
+    $cpuMeta=@{platform='windows';cores=[string]$cores;logicalProcessors=[string]$logical;sockets=[string]$cpus.Count;baseFrequency=[string]$cpus[0].MaxClockSpeed;virtualization=[string]$virtualization}
     $allCaches=@(Get-CimInstance Win32_CacheMemory)
-    foreach ($level in 1..3) {
+    foreach ($level in 1..2) {
         $cache=@($allCaches | Where-Object {$_.Level -eq ($level+2)})
         if ($cache.Count -gt 0) { $cpuMeta['cacheL'+$level]=[string](1024*($cache | Measure-Object InstalledSize -Sum).Sum) }
     }
+    # CacheMemory can repeat the same shared L3 for P/E core groups. Processor reports it per socket.
+    $l3=@($cpus | Where-Object {$_.L3CacheSize -gt 0})
+    if ($l3.Count -eq $cpus.Count) { $cpuMeta.cacheL3=[string](1024*($l3 | Measure-Object L3CacheSize -Sum).Sum) }
     $devices.Add((Device 'cpu' 'cpu' 'CPU' $cpus[0].Name.Trim() $true $cpuMeta))
     $ram=@(Get-CimInstance Win32_PhysicalMemory)
     $script:installedMemory=[double]($ram | Measure-Object Capacity -Sum).Sum
@@ -131,16 +139,20 @@ try {
         if ($null -eq $sensorTask -and $lastSensor.Elapsed.TotalSeconds -ge 15) {
             $sensorTask=$sensorWorker.BeginInvoke(); $lastSensor.Restart()
         }
-        $cpu=$counter.Values('cpu'); $user=$counter.Values('user'); $system=$counter.Values('system')
-        $cores=@($cpu.Keys | Where-Object {$_ -match '^\d+,\d+$'} | Sort-Object {[int]($_.Split(',')[0])},{[int]($_.Split(',')[1])})
+        $cpu=$counter.NullableValues('cpu'); $user=$counter.NullableValues('user'); $system=$counter.NullableValues('system')
         $p=[SparkNative]::Memory(); $page=Bytes $p.PageSize
         $total=(Bytes $p.PhysicalTotal)*$page; $available=(Bytes $p.PhysicalAvailable)*$page
-        $modified=$counter.Scalar('modified'); $standby=$counter.Scalar('standbyCore')+$counter.Scalar('standbyNormal')+$counter.Scalar('standbyReserve')
+        $modified=$counter.Scalar('modified')
+        $standbyCore=$counter.Scalar('standbyCore'); $standbyNormal=$counter.Scalar('standbyNormal'); $standbyReserve=$counter.Scalar('standbyReserve')
+        $standby=$null; $cached=$null
+        if ($null -ne $standbyCore -and $null -ne $standbyNormal -and $null -ne $standbyReserve) { $standby=$standbyCore+$standbyNormal+$standbyReserve }
+        if ($null -ne $standby -and $null -ne $modified) { $cached=$standby+$modified }
         $freq=$counter.Scalar('frequency'); $perf=$counter.Scalar('performance'); if ($null -ne $freq -and $null -ne $perf) {$freq=$freq*$perf/100.0}
         $cv=@{usage=(Clamp $cpu['_Total']);user=$user['_Total'];system=$system['_Total'];frequency=$freq;processes=[double]$p.Processes;threads=[double]$p.Threads;handles=[double]$p.Handles;temperature=$null}
-        $coreValues=@(for ($i=0;$i -lt $cores.Count;$i++) { $k=$cores[$i]; @{index=$i;usage=(Clamp $cpu[$k]);user=$user[$k];system=$system[$k]} })
-        $used=$total-$available-$modified
-        $metrics=@{cpu=@{values=$cv;cores=$coreValues};memory=@{values=@{total=$total;used=$used;available=$available;usage=$used*100/$total;committed=(Bytes $p.CommitTotal)*$page;commitLimit=(Bytes $p.CommitLimit)*$page;cached=$standby+$modified;paged=(Bytes $p.KernelPaged)*$page;nonpaged=(Bytes $p.KernelNonpaged)*$page;modified=$modified;standby=$standby;free=$counter.Scalar('free');reserved=$script:installedMemory-$total}}}
+        $coreValues=@(for ($i=0;$i -lt $script:coreKeys.Count;$i++) { $k=$script:coreKeys[$i]; @{index=$i;usage=(Clamp $cpu[$k]);user=$user[$k];system=$system[$k]} })
+        $used=$null; $memoryUsage=$null
+        if ($null -ne $modified) { $used=$total-$available-$modified; $memoryUsage=$used*100/$total }
+        $metrics=@{cpu=@{values=$cv;cores=$coreValues};memory=@{values=@{total=$total;used=$used;available=$available;usage=$memoryUsage;committed=(Bytes $p.CommitTotal)*$page;commitLimit=(Bytes $p.CommitLimit)*$page;cached=$cached;paged=(Bytes $p.KernelPaged)*$page;nonpaged=(Bytes $p.KernelNonpaged)*$page;modified=$modified;standby=$standby;free=$counter.Scalar('free');reserved=$script:installedMemory-$total}}}
         $idle=$counter.Values('diskIdle'); $read=$counter.Values('diskRead'); $write=$counter.Values('diskWrite'); $latency=$counter.Values('diskLatency')
         foreach ($disk in $script:disks) {
             $index=[string]$disk.Number; $instance=$idle.Keys | Where-Object {($_ -split ' ')[0] -eq $index} | Select-Object -First 1
@@ -157,7 +169,7 @@ try {
             $n=$net.GetIPStatistics(); $old=$lastNet[$net.Id]; $rx=$null; $tx=$null
             if ($null -ne $old -and $elapsed -gt 0 -and $n.BytesReceived -ge $old[0] -and $n.BytesSent -ge $old[1]) { $rx=($n.BytesReceived-$old[0])/$elapsed; $tx=($n.BytesSent-$old[1])/$elapsed }
             $lastNet[$net.Id]=@($n.BytesReceived,$n.BytesSent)
-            $values=@{receive=$rx;send=$tx;linkSpeed=$net.Speed/1e6;up=$(if($net.OperationalStatus -eq 'Up'){1}else{0});errors=$n.IncomingPacketsWithErrors+$n.OutgoingPacketsWithErrors;drops=$n.IncomingPacketsDiscarded+$n.OutgoingPacketsDiscarded}
+            $values=@{receive=$rx;send=$tx;linkSpeed=$(if($net.Speed -gt 0){$net.Speed/1e6}else{$null});up=$(if($net.OperationalStatus -eq 'Up'){1}else{0});errors=$n.IncomingPacketsWithErrors+$n.OutgoingPacketsWithErrors;drops=$n.IncomingPacketsDiscarded+$n.OutgoingPacketsDiscarded}
             if ($net.NetworkInterfaceType -eq 'Wireless80211') { $wi=[SparkNative]::Wifi($net.Id); foreach ($k in @('signal','rxSpeed','txSpeed')) { $values[$k]=$wi[$k] } }
             $metrics['net:'+$net.Id]=@{values=$values}
         }

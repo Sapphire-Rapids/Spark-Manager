@@ -127,7 +127,7 @@ import AppKit
         let compact = collapsed ?? (bounds.width < 1140)
         navigationWidth = compact ? 48 : 268
         let bodyWidth = bounds.width - navigationWidth
-        heading.frame = NSRect(x: navigationWidth + 19, y: 41, width: 110, height: 24)
+        heading.frame = NSRect(x: navigationWidth + 19, y: 41, width: max(110, bodyWidth - 440), height: 24)
         refreshButton.frame = NSRect(x: bounds.width - 414, y: 39, width: 160, height: 29)
         add.frame = NSRect(x: bounds.width - 254, y: 39, width: 128, height: 29)
         language.frame = NSRect(x: bounds.width - 122, y: 42, width: 80, height: 24)

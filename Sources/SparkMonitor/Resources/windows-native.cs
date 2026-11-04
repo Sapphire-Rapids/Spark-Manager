@@ -28,7 +28,12 @@ public sealed class SparkCounters : IDisposable {
         return v.Number;
     }
     public Dictionary<string,double> Values(string key) {
-        var result=new Dictionary<string,double>(); IntPtr handle;
+        var result=new Dictionary<string,double>();
+        foreach(var pair in NullableValues(key)) if(pair.Value.HasValue) result[pair.Key]=pair.Value.Value;
+        return result;
+    }
+    public Dictionary<string,double?> NullableValues(string key) {
+        var result=new Dictionary<string,double?>(); IntPtr handle;
         if(!counters.TryGetValue(key,out handle)) return result;
         uint bytes=0,count; uint status=PdhGetFormattedCounterArray(handle,0x8200,ref bytes,out count,IntPtr.Zero);
         if(status!=0x800007D2 || bytes==0) return result; // PDH_MORE_DATA
@@ -38,7 +43,7 @@ public sealed class SparkCounters : IDisposable {
             int size=Marshal.SizeOf(typeof(Item));
             for(int i=0;i<count;i++) {
                 Item item=(Item)Marshal.PtrToStructure(IntPtr.Add(buffer,i*size),typeof(Item));
-                if(item.Value.Status<=1) result[Marshal.PtrToStringUni(item.Name)]=item.Value.Number;
+                result[Marshal.PtrToStringUni(item.Name)]=item.Value.Status<=1 ? (double?)item.Value.Number : null;
             }
         } finally { Marshal.FreeHGlobal(buffer); }
         return result;

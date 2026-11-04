@@ -58,7 +58,11 @@ import AppKit
     }
     var gpuActivityCount: Int { localMac ? min(4, engineKeys.count) : 4 }
     func engineTitle(_ key: String) -> String {
-        if let title = selected?.metadata[key] { return title }
+        if let title = selected?.metadata[key] {
+            let duplicates = engineKeys.filter { selected?.metadata[$0] == title }.count > 1
+            let display = ["VideoDecode": "Video Decode", "VideoEncode": "Video Encode"][title] ?? title
+            return duplicates ? display + " (" + key.dropFirst(7) + ")" : display
+        }
         return ["usage": tr("总体利用率", "GPU utilization"), "memoryActivity": tr("内存读写活动", "Memory activity"), "encoder": "Video Encode", "decoder": "Video Decode"][key] ?? "—"
     }
     var gpuMemoryFields: [String] {
@@ -72,7 +76,11 @@ import AppKit
     }
     var selectedEngines: [String] {
         let saved = selected.flatMap { state.profile.gpuGraphs?[$0.id] } ?? []
-        return (0..<gpuActivityCount).map { i in i < saved.count && engineKeys.contains(saved[i]) ? saved[i] : (i < engineKeys.count ? engineKeys[i] : "") }
+        let preferred = windows ? ["3D", "Copy", "VideoDecode", "VideoEncode"].compactMap { name in
+            engineKeys.first { selected?.metadata[$0]?.replacingOccurrences(of: " ", with: "") == name }
+        } : []
+        let defaults = preferred + engineKeys.filter { !preferred.contains($0) }
+        return (0..<gpuActivityCount).map { i in i < saved.count && engineKeys.contains(saved[i]) ? saved[i] : (i < defaults.count ? defaults[i] : "") }
     }
     @objc func chooseEngine(_ menu: NSPopUpButton) {
         guard let id = selected?.id, let key = menu.selectedItem?.representedObject as? String else { return }
@@ -125,7 +133,9 @@ import AppKit
                         let menu = NSPopUpButton(); menu.isBordered = false; menu.font = .systemFont(ofSize: 12)
                         menu.target = self; menu.action = #selector(chooseEngine(_:)); menu.tag = i
                         for key in engineKeys {
-                            menu.addItem(withTitle: engineTitle(key)); menu.lastItem?.representedObject = key
+                            let item = NSMenuItem(title: engineTitle(key), action: nil, keyEquivalent: "")
+                            item.representedObject = key; menu.menu?.addItem(item)
+                            if key.hasPrefix("engine:") { item.toolTip = tr("硬件引擎 ", "Hardware engine ") + key.dropFirst(7) }
                         }
                         menu.setAccessibilityLabel(tr("GPU 图表", "GPU chart") + " \(i + 1)")
                         content.addSubview(menu); engineMenus.append(menu)
@@ -150,25 +160,26 @@ import AppKit
             row.nameLabel.stringValue = deviceTitle(d)
             let percent = number(m?.value("usage"), "%", digits: 0)
             switch d.kind {
-            case .cpu: row.subtitle.stringValue = percent + " " + number(m?.value("frequency").map { $0 / 1000 }, " GHz", digits: 2)
+            case .cpu: row.subtitle.stringValue = percent + (localMac || windows ? " " + number(m?.value("frequency").map { $0 / 1000 }, " GHz", digits: 2) : "")
             case .memory: row.subtitle.stringValue = memoryPair(m?.value("used"), m?.value("total")) + " (\(percent))"
             case .disk:
                 let detail = localMac ? tr("读 ", "R ") + bytes(m?.value("read"), perSecond: true) + "\n" + tr("写 ", "W ") + bytes(m?.value("write"), perSecond: true) : (d.metadata["type"] ?? "SSD (NVMe)") + "\n" + percent
                 row.subtitle.stringValue = detail
             case .network:
-                row.subtitle.stringValue = d.name + "\n" + tr("发送: ", "S: ") + bitRate(m?.value("send")) + " " + tr("接收: ", "R: ") + bitRate(m?.value("receive"))
+                row.subtitle.stringValue = d.name + "\n" + tr("发送 ", "S ") + bitRate(m?.value("send")) + "\n" + tr("接收 ", "R ") + bitRate(m?.value("receive"))
+                row.toolTip = d.name
             case .gpu: row.subtitle.stringValue = d.model + "\n" + percent + (m?.value("temperature").map { " (" + number($0, " °C", digits: 0) + ")" } ?? "")
             }
             let key = d.kind == .network ? "receive" : (localMac && d.kind == .disk ? "read" : "usage")
             row.chart.points = series(state, device: d, key: key, second: d.kind == .network ? "send" : (localMac && d.kind == .disk ? "write" : nil))
-            row.chart.ceiling = d.kind == .network ? rateCeiling(row.chart.points, multiplier: 8) / 8 : (localMac && d.kind == .disk ? rateCeiling(row.chart.points) : 100)
+            row.chart.ceiling = d.kind == .network ? rateCeiling(row.chart.points, multiplier: 8) / 8 : (localMac && d.kind == .disk ? rateCeiling(row.chart.points, binaryUnits: true) : 100)
             row.chart.needsDisplay = true; row.needsDisplay = true
             row.setAccessibilityLabel(row.nameLabel.stringValue + ", " + row.subtitle.stringValue)
         }
         composition.isHidden = selected?.kind != .memory
         if let d = selected {
             let metric = state.latest?.devices[d.id]
-            if d.kind == .memory, let total = metric?.value("total") {
+            if d.kind == .memory, let total = metric?.value("total") ?? state.history.reversed().lazy.compactMap({ $0.snapshot?.devices[d.id]?.value("total") }).first {
                 let installed = windows ? Double(d.metadata["installed"] ?? "") ?? total : total
                 modelLabel.stringValue = bytes(installed)
                 composition.fraction = metric?.value("used").map { $0 / total }
@@ -189,7 +200,7 @@ import AppKit
                 case .gpu:
                     if i < gpuActivityCount {
                         key = selectedEngines[i]; caption = engineTitle(key)
-                        let index = engineKeys.firstIndex(of: key) ?? -1
+                        let index = engineMenus[i].indexOfItem(withRepresentedObject: key)
                         if engineMenus[i].indexOfSelectedItem != index { engineMenus[i].selectItem(at: index) }
                     } else {
                         let field = gpuMemoryFields[i - gpuActivityCount]
@@ -204,6 +215,8 @@ import AppKit
                 chart.toolTip = chart.coreIndex.map { "CPU \($0)" }
                 if d.kind == .network {
                     chart.toolTip = tr("实线：接收；虚线：发送。", "Solid: receive; dashed: send.")
+                } else if d.kind == .disk && i == 1 {
+                    chart.toolTip = tr("实线：读取；虚线：写入。", "Solid: read; dashed: write.")
                 }
                 var capacity: Double?
                 if memoryChart {
@@ -220,7 +233,7 @@ import AppKit
                     if capacity == nil { chart.points = []; chart.unavailable = "—" }
                 }
                 else if d.kind == .network { chart.ceiling = rateCeiling(chart.points, multiplier: 8) / 8 }
-                else if d.kind == .disk && (i == 1 || localMac) { chart.ceiling = rateCeiling(chart.points) }
+                else if d.kind == .disk && (i == 1 || localMac) { chart.ceiling = rateCeiling(chart.points, binaryUnits: i == 1) }
                 else { chart.ceiling = 100 }
                 chartTitles[i].stringValue = caption
                 chartScales[i].stringValue = memoryChart ? bytes(capacity) : d.kind == .network ? bitRate(chart.ceiling) : d.kind == .disk && i == 1 ? bytes(chart.ceiling, perSecond: true) : d.kind == .gpu ? number(chartMetric?.value(key), "%", digits: 0) : "100%"
@@ -251,7 +264,8 @@ import AppKit
             let frame = NSRect(x: x, y: top + y, width: w, height: size + 8)
             field.stringValue = text; field.font = .systemFont(ofSize: size)
             field.textColor = secondary ? .secondaryLabelColor : .labelColor
-            field.toolTip = nil; field.maximumNumberOfLines = 1
+            field.toolTip = nil; field.maximumNumberOfLines = 1; field.lineBreakMode = .byTruncatingTail
+            field.setAccessibilityLabel(nil)
             field.frame = frame; details[cursor].1 = frame; cursor += 1
             return field
         }
@@ -271,16 +285,17 @@ import AppKit
         var facts: [(String, String)] = []; var factsX: CGFloat = 228; var keyWidth: CGFloat = zh ? 86 : 138
         switch d.kind {
         case .cpu:
-            stat(tr("利用率", "Utilization"), number(v("usage"), "%", digits: 0), x: 0, y: 0, w: 68)
-            stat(localMac ? tr("性能核速度", "P-core speed") : tr("速度", "Speed"), number(v("frequency").map { $0 / 1000 }, " GHz", digits: 2), x: 76, y: 0, w: 148)
-            stat(tr("进程", "Processes"), number(v("processes"), digits: 0), x: 0, y: 56, w: 68)
-            stat(tr("线程", "Threads"), number(v("threads"), digits: 0), x: 76, y: 56, w: 68)
-            if localMac { stat(tr("能效核速度", "E-core speed"), number(v("efficiencyFrequency").map { $0 / 1000 }, " GHz", digits: 2), x: 150, y: 56, w: 103) }
-            else { stat(windows ? tr("句柄", "Handles") : tr("负载 (1m)", "Load (1m)"), number(v(windows ? "handles" : "load"), digits: windows ? 0 : 1), x: 150, y: 56, w: 103) }
+            stat(tr("利用率", "Utilization"), number(v("usage"), "%", digits: 0), x: 0, y: 0, w: 74)
+            let speed = stat(localMac ? tr("性能核速度", "P-core speed") : (windows ? tr("速度", "Speed") : tr("驱动报告频率", "Driver-reported clock")), number(v("frequency").map { $0 / 1000 }, " GHz", digits: 2), x: 80, y: 0, w: 210)
+            if !localMac && !windows { speed.toolTip = tr("内核驱动报告的频率，可表示所请求的频率档位。", "Frequency reported by the kernel driver; it can represent the requested clock state.") }
+            stat(tr("进程", "Processes"), number(v("processes"), digits: 0), x: 0, y: 56, w: 74)
+            stat(tr("线程", "Threads"), number(v("threads"), digits: 0), x: 80, y: 56, w: 86)
+            if localMac { stat(tr("能效核速度", "E-core speed"), number(v("efficiencyFrequency").map { $0 / 1000 }, " GHz", digits: 2), x: 174, y: 56, w: 125) }
+            else { stat(windows ? tr("句柄", "Handles") : tr("负载 (1m)", "Load (1m)"), number(v(windows ? "handles" : "load"), digits: windows ? 0 : 1), x: 174, y: 56, w: 125) }
             let uptime = state.latest.map { Int($0.uptime) }
             let duration = uptime.map { String(format: "%d:%02d:%02d:%02d", $0 / 86400, $0 / 3600 % 24, $0 / 60 % 60, $0 % 60) } ?? "—"
             stat(tr("正常运行时间", "Up time"), duration, x: 0, y: 112, w: 225)
-            factsX = 260
+            factsX = 310
             let virtualization = d.metadata["virtualization"].map { $0.lowercased() == "true" ? tr("已启用", "Enabled") : tr("已禁用", "Disabled") } ?? "—"
             let frequencyKey = d.metadata["baseFrequency"] != nil ? "baseFrequency" : "maxFrequency"
             facts = [(frequencyKey == "baseFrequency" ? tr("基准速度", "Base speed") : tr("最高频率", "Maximum clock"), number(d.metadata[frequencyKey].flatMap(Double.init).map { $0 / 1000 }, " GHz", digits: 2)),
@@ -294,7 +309,8 @@ import AppKit
             let compressed = v("compressed")
             stat(compressed == nil ? tr("使用中", "In use") : tr("使用中（已压缩）", "In use (Compressed)"), bytes(v("used")) + (compressed.map { " (" + bytes($0) + ")" } ?? ""), x: 0, y: 0, w: 195)
             stat(tr("可用", "Available"), bytes(v("available")), x: 196, y: 0, w: 120)
-            stat(localMac ? tr("App 内存", "App memory") : tr("已提交", "Committed"), localMac ? bytes(v("app")) : memoryPair(v("committed"), v("commitLimit")), x: 0, y: 56, w: 180)
+            let committed = stat(localMac ? tr("App 内存", "App memory") : (windows ? tr("已提交", "Committed") : tr("提交量 / 参考值", "Commit / reference")), localMac ? bytes(v("app")) : memoryPair(v("committed"), v("commitLimit")), x: 0, y: 56, w: 180)
+            if !localMac && !windows { committed.toolTip = tr("已提交虚拟内存 / CommitLimit。仅严格超额分配模式把后者作为硬上限。", "Committed virtual memory / CommitLimit. The limit is enforced in strict overcommit mode.") }
             stat(tr("已缓存", "Cached"), bytes(v("cached")), x: 196, y: 56, w: 120)
             stat(windows ? tr("分页池", "Paged pool") : (localMac ? tr("联动内存", "Wired memory") : tr("已用 Swap", "Swap used")), bytes(v(windows ? "paged" : (localMac ? "wired" : "swapUsed"))), x: 0, y: 112, w: 180)
             stat(windows ? tr("非分页池", "Non-paged pool") : (localMac ? tr("已用 Swap", "Swap used") : tr("Swap 总量", "Swap total")), bytes(v(windows ? "nonpaged" : (localMac ? "swapUsed" : "swapTotal"))), x: 196, y: 112, w: 120)
@@ -312,8 +328,8 @@ import AppKit
         case .disk:
             stat(localMac ? tr("每秒操作数", "IOPS") : tr("活动时间", "Active time"), localMac ? number(v("operations"), digits: 0) : number(v("usage"), "%", digits: 0), x: 0, y: 0, w: localMac ? 112 : 76)
             stat(tr("平均响应时间", "Average response time"), number(v("latency"), tr(" 毫秒", " ms")), x: localMac ? 120 : 78, y: 0, w: 194)
-            stat(tr("读取速度", "Read speed"), bytes(v("read"), perSecond: true), x: 8, y: 56, w: 151)
-            stat(tr("写入速度", "Write speed"), bytes(v("write"), perSecond: true), x: 167, y: 56, w: 150)
+            stat(tr("读取速度", "Read speed"), bytes(v("read"), perSecond: true), x: 0, y: 56, w: 151)
+            stat(tr("写入速度", "Write speed"), bytes(v("write"), perSecond: true), x: 159, y: 56, w: 150)
             factsX = 315; keyWidth = zh ? 86 : 116
             facts = [(tr("容量", "Capacity"), bytes(v("capacity"))), (tr("已格式化", "Formatted"), bytes(v("total"))),
                      (tr("系统磁盘", "System disk"), d.metadata["system"].map { $0 == "true" ? tr("是", "Yes") : tr("否", "No") } ?? "—"),
@@ -326,7 +342,7 @@ import AppKit
             let wifi = d.metadata["type"] == "Wi-Fi"
             facts = [(tr("适配器名称", "Adapter name"), d.name)]
             if wifi { facts.append(("SSID", state.live ? meta("ssid") : "—")) }
-            facts += [(tr("DNS 名称", "DNS name"), meta("domain")), (tr("连接类型", "Connection type"), wifi ? meta("protocol") : meta("type")),
+            facts += [(tr("DNS 名称", "DNS name"), meta("domain")), (tr("连接类型", "Connection type"), wifi ? meta("protocol") : (meta("type") == "Ethernet" ? tr("以太网", "Ethernet") : meta("type"))),
                       (tr("IPv4 地址", "IPv4 address"), meta("ipv4")), (tr("IPv6 地址", "IPv6 address"), meta("ipv6"))]
             if wifi { facts.append((tr("信号强度", "Signal strength"), number(v("signal"), d.metadata["signalUnit"] == "%" ? "%" : " dBm", digits: 0))) }
         case .gpu:
@@ -338,13 +354,18 @@ import AppKit
                 let total = v("dedicatedTotal").flatMap { a in v("sharedTotal").map { a + $0 } }
                 stat(tr("GPU 内存", "GPU memory"), memoryPair(used, total), x: 0, y: 56, w: 158)
             }
-            if localMac { stat(tr("GPU 驱动内存", "GPU driver memory"), bytes(v("allocated")), x: 160, y: 0, w: 195) }
+            if localMac { stat(tr("GPU 驱动内存", "GPU driver memory"), bytes(v("allocated")), x: 140, y: 0, w: 165) }
             else if gpuMemoryFields.contains("shared") { stat(tr("共享 GPU 内存", "Shared GPU memory"), memoryPair(v("sharedUsed"), v("sharedTotal")), x: 160, y: dedicated ? 56 : 0, w: 195) }
-            if let temperature = v("temperature") { stat(tr("GPU 温度", "GPU temperature"), number(temperature, " °C", digits: 0), x: 0, y: dedicated ? 112 : 56, w: 155) }
-            factsX = 363; keyWidth = zh ? 103 : 110
+            if v("temperature") != nil || state.history.contains(where: { $0.snapshot?.devices[d.id]?.value("temperature") != nil }) {
+                stat(tr("GPU 温度", "GPU temperature"), number(v("temperature"), " °C", digits: 0), x: 0, y: dedicated ? 112 : 56, w: 155)
+            }
+            factsX = windows ? 363 : 315; keyWidth = zh ? 103 : 110
             facts = [(tr("驱动版本", "Driver version"), localMac ? "—" : meta("driver")), (tr("驱动日期", "Driver date"), meta("driverDate")),
                      (tr("DirectX 版本", "DirectX version"), meta("directX")), (tr("物理位置", "Physical location"), meta("pci"))]
-            if localMac { facts = [(tr("GPU 核心", "GPU cores"), meta("cores")), (tr("内存架构", "Memory model"), tr("CPU / GPU 共享", "CPU / GPU shared")), (tr("驱动", "Driver"), meta("driver"))] }
+            if localMac {
+                factsX = 315; keyWidth = zh ? 72 : 110
+                facts = [(tr("GPU 核心", "GPU cores"), meta("cores")), (tr("内存架构", "Memory model"), tr("CPU / GPU 共享", "CPU / GPU shared")), (tr("驱动", "Driver"), meta("driver"))]
+            }
         }
         facts.removeAll { $0.1 == "—" || $0.1.isEmpty }
         for (i, fact) in facts.enumerated() {
@@ -376,7 +397,7 @@ import AppKit
         editButton.frame = NSRect(x: 10, y: bounds.height - 39, width: sideWidth - 20, height: 30)
         detailScroll.frame = NSRect(x: sideWidth + 30, y: offset, width: bounds.width - sideWidth - 56, height: bounds.height - offset)
         let w = detailScroll.contentSize.width
-        let h = max(640, detailScroll.contentSize.height)
+        let h = max(640 - offset, detailScroll.contentSize.height)
         titleLabel.frame = NSRect(x: 0, y: 12, width: w * 0.5, height: 44)
         modelLabel.frame = NSRect(x: w * 0.34, y: 26, width: w * 0.66, height: 26)
         let top: CGFloat = 76
@@ -384,7 +405,7 @@ import AppKit
         let kind = selected?.kind
         switch kind {
         case .cpu:
-            let height = h - 270
+            let height = h - 284
             if state.profile.logicalCPU {
                 let columns = charts.count == 20 ? 5 : (charts.count > 16 ? 8 : 4)
                 let rowCount = CGFloat((charts.count + columns - 1) / columns), cellW = (w - CGFloat(columns - 1) * 4) / CGFloat(columns)
@@ -406,7 +427,7 @@ import AppKit
         case .gpu:
             let half = (w - 10) / 2
             let gpuTop = top + 8
-            let graphHeight = (h - (gpuMemoryFields.count == 2 ? 372 : 340)) / CGFloat(2 + gpuMemoryFields.count)
+            let graphHeight = (h - (gpuMemoryFields.count == 2 ? 386 : 340)) / CGFloat(2 + gpuMemoryFields.count)
             frames = (0..<gpuActivityCount).map { NSRect(x: CGFloat($0 % 2) * (half + 10), y: gpuTop + CGFloat($0 / 2) * (graphHeight + 32), width: half, height: graphHeight) }
             for index in gpuMemoryFields.indices {
                 frames.append(NSRect(x: 0, y: gpuTop + CGFloat(2 + index) * (graphHeight + 32), width: w, height: graphHeight))
@@ -462,6 +483,8 @@ import AppKit
             let start = bounds.width * CGFloat(fraction)
             Style.color(.memory).withAlphaComponent(0.55).setFill()
             NSRect(x: start, y: 0, width: bounds.width * CGFloat(modified), height: bounds.height).fill()
+            Style.color(.memory).withAlphaComponent(0.12).setFill()
+            NSRect(x: bounds.width * CGFloat(fraction + modified), y: 0, width: bounds.width * CGFloat(standby), height: bounds.height).fill()
             for f in [fraction + modified, fraction + modified + standby] {
                 Style.color(.memory).setFill(); NSRect(x: bounds.width * CGFloat(min(1, f)), y: 0, width: 1, height: bounds.height).fill()
             }
@@ -483,8 +506,9 @@ func bitRate(_ bytes: Double?) -> String {
     if bits >= 1_000_000 { return number(bits / 1_000_000, " Mbps") }
     return number(bits / 1000, " Kbps")
 }
-func rateCeiling(_ points: [ChartPoint], multiplier: Double = 1) -> Double {
+func rateCeiling(_ points: [ChartPoint], multiplier: Double = 1, binaryUnits: Bool = false) -> Double {
     let peak = max(1, (points.flatMap { [$0.total, $0.secondary].compactMap { $0 } }.max() ?? 1) * multiplier)
-    let magnitude = pow(10, floor(log10(peak)))
+    let unit = binaryUnits ? pow(1024, floor(log(peak) / log(1024))) : 1
+    let magnitude = unit * pow(10, floor(log10(peak / unit)))
     return ([1.0, 2, 5, 10].first { $0 * magnitude >= peak } ?? 10) * magnitude
 }

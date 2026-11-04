@@ -6,7 +6,7 @@ import Foundation
         for i in 1...3 {
             let state = HostState(HostProfile(name: "Spark 0\(i)", host: "spark-0\(i).example", username: "demo"))
             state.inventory = HardwareInventory(hostname: state.profile.name, devices: [
-                HardwareDevice(id: "cpu", kind: .cpu, name: "CPU", model: "NVIDIA GB10", defaultVisible: true, metadata: ["cores": "20", "architecture": "aarch64", "sockets": "1", "cacheL1": "3932160", "cacheL2": "20971520", "cacheL3": "25165824", "maxFrequency": "3900"]),
+                HardwareDevice(id: "cpu", kind: .cpu, name: "CPU", model: "NVIDIA GB10", defaultVisible: true, metadata: ["cores": "20", "architecture": "aarch64", "sockets": "1", "cacheL1": "2621440", "cacheL2": "26214400", "cacheL3": "25165824", "maxFrequency": "3900"]),
                 HardwareDevice(id: "memory", kind: .memory, name: "Memory", model: "LPDDR5X", defaultVisible: true, metadata: [:]),
                 HardwareDevice(id: "disk:demo", kind: .disk, name: "0 (NVMe)", model: "4 TB NVMe SSD", defaultVisible: true, metadata: ["index": "0", "system": "true", "type": "SSD (NVMe)"]),
                 HardwareDevice(id: "net:demo", kind: .network, name: "wifi0", model: "MediaTek Wi-Fi 7 MT7925", defaultVisible: true, metadata: ["type": "Wi-Fi", "rdma_ports": "[]", "ipv4": "192.0.2.10", "interface": "wifi0", "ssid": "Spark Demo", "protocol": "802.11be", "domain": "example", "dns": "192.0.2.1", "mac": "02:00:00:00:00:01", "ipv6": "2001:db8::10"]),
