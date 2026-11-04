@@ -2,29 +2,31 @@
 
 All reads are unprivileged. Null means unavailable; it is never converted to zero. Charts have a 60-second timestamp axis anchored to the latest received sample; redraws do not scroll ahead of the data and a retained boundary sample is clipped at the left edge; rates use remote monotonic elapsed time.
 
+The native app uses Windows Task Manager's Performance-page layout and fields for every host. A field without an equivalent source stays unavailable. Network pages show one interface-throughput chart; RDMA has no additional chart or detail rows. CPU/disk temperatures, power, load, IOPS and OS-specific memory breakdowns are not added to these pages.
+
 | Metric | Source and calculation |
 |---|---|
 | CPU user | Delta(user + nice) / delta(sum of first eight `/proc/stat` fields) |
 | CPU system | Delta(system + irq + softirq) / the same denominator |
 | CPU total | User + system; idle, iowait and steal are not attributed to either series. Guest fields are already included in user/nice and are not added again. |
 | CPU frequency | Mean of available `scaling_cur_freq` readings; a driver-reported frequency, not an independent measurement of effective work. |
-| CPU temperature | Maximum of the Spark ACPI CPU zones `TS0E`, `TS0P`, `TS1E`, `TS1P`, found by `device/path`, not enumeration order. Individual zones and source names appear in the temperature tooltip. TSOC/TGPU/TUNC are not substituted. |
+| CPU temperature | The sampler reads the maximum of the Spark ACPI CPU zones `TS0E`, `TS0P`, `TS1E`, `TS1P`, found by `device/path`. The native Task Manager-style CPU page does not display temperature. |
 | Memory | `/proc/meminfo`: OS-visible total, available, in-use = total − available, cache = Cached + SReclaimable, Swap used = SwapTotal − SwapFree. Cache overlaps reclaimable memory and is not an additional allocation to sum with used/available. |
 | Disk active time | Delta(io_ticks) / elapsed milliseconds, displayed at 0–100%; this is device busy time, not percent of SSD capacity or bandwidth. |
 | Disk read/write | Sector counter deltas × 512 / elapsed seconds, from `/proc/diskstats`. |
 | Disk capacity/free | Physical sectors plus `statvfs` for the disk's mounted filesystems, deduplicated by major:minor. “Free” is filesystem space available to the user. |
 | Disk temperature | NVMe `Composite` hwmon sensor whose parent device matches that disk. |
 | Network | Per-interface receive/transmit byte deltas and error/drop counters; link speed and state from sysfs. Each logical interface has its own page. |
-| RDMA | Interface mapping via `gid_attrs/ndevs`; `port_xmit_data` and `port_rcv_data` count four-byte units. Counter deltas divided by monotonic elapsed time produce a separate RDMA throughput chart; details also show cumulative bytes. Counters cover the whole HCA port, including any other interfaces mapped to that port. RDMA and network-interface counters are never added together because their coverage can overlap. |
+| RDMA | Collected as separate port counters and rates, but not displayed in the native Task Manager pages. `port_xmit_data` and `port_rcv_data` count four-byte units; deltas use monotonic elapsed time. These whole-port counters are never added to network-interface traffic. |
 | GPU | `nvidia-smi` utilization, memory activity, temperature, graphics clock and power. Memory activity is interface activity, **not allocated memory capacity**. Power is the driver reading, not CPU or wall power. |
 
 Spark CPU/GPU share physical memory. The memory page is the common pool; the GPU page does not fabricate a dedicated VRAM allocation. Unsupported Windows-specific fields such as separate 3D/Copy engine percentages are not synthesized.
 
 Counter resets or the initial baseline yield unavailable rates. Broken streams retain old history only as historical samples; current values are cleared. Authentication and host-key failures stop automatic reconnect. Transient network failures are retried after five seconds.
 
-Windows-only placeholders are replaced with Linux data: maximum CPU clock, architecture, 1-minute load, kernel slab/reclaimable slab, shared pages and dirty pages, filesystem available space, network duplex/MAC/DNS, and GPU PCI location. CPU process/thread counts are Linux process and schedulable-task counts; cache sizes are summed over distinct sysfs shared-cache groups. Disk response time is the read/write time delta divided by completed operations. Network graph labels use decimal bits per second; memory/disk capacities retain binary units.
+CPU process/thread counts are Linux process and schedulable-task counts; cache sizes are summed over distinct sysfs shared-cache groups. Disk response time is the read/write time delta divided by completed operations. Network graph labels use decimal bits per second. Memory/disk labels follow Task Manager's KB/MB/GB notation with 1,024-based scaling.
 
-The GPU page's four activity charts are the driver's overall GPU utilization, memory read/write activity, video encoder and video decoder. They are **not four compute engines**. Its single unified-memory chart shows the same whole-system used/total pool as the Memory page, **not a separately measured GPU allocation**.
+GPU pages use four engine charts and dedicated/shared GPU-memory charts. Devices without dedicated memory have only the shared-memory chart. Overall utilization remains a separate statistic; it is not substituted for 3D or Copy activity. Only GPU-specific allocations can populate the memory charts. Whole-system RAM use is shown on the Memory page. Missing engine readings and GPU-memory limits remain unavailable; Windows' half-RAM shared-memory limit is not imposed on other operating systems.
 
 Network metadata comes from NetworkManager (`nmcli device show`) and sysfs. Wi-Fi SSID, signal in dBm, radio frequency and actual Rx/Tx negotiated rates come from `iw dev <interface> link` without scanning or changing connections. The Wi-Fi protocol is derived from the active link's EHT/HE/VHT/MCS report, not the adapter's advertised maximum. SSID, DNS suffix/server and MAC are refreshed with inventory every 30 seconds; signal and negotiated rates update each sample. A DNS suffix and DNS server address are separate fields. IPv6 includes link-local addresses. An unconfigured DNS field remains unavailable.
 
@@ -32,7 +34,8 @@ Network metadata comes from NetworkManager (`nmcli device show`) and sysfs. Wi-F
 
 - [NVIDIA SMI](https://docs.nvidia.com/deploy/nvidia-smi/): utilization and encoder/decoder metric definitions.
 - [NetworkManager nmcli](https://networkmanager.pages.freedesktop.org/NetworkManager/NetworkManager/nmcli.html): device metadata queries.
-- [Microsoft Press: Windows 10 Tools](https://download.microsoft.com/download/7/3/8/7381E0E8-CE72-4366-9849-13B2BAFBBA3C/Microsoft_Press_ebook_Windows_10_Tools_8.5x11.pdf): Task Manager Ethernet throughput layout; Linux-specific fields retain explicit Linux names.
+- [Microsoft Press: Windows 10 Tools](https://download.microsoft.com/download/7/3/8/7381E0E8-CE72-4366-9849-13B2BAFBBA3C/Microsoft_Press_ebook_Windows_10_Tools_8.5x11.pdf): Task Manager Performance-page layout.
+- [WLAN signal quality](https://learn.microsoft.com/en-us/windows/win32/api/wlanapi/ns-wlanapi-wlan_association_attributes): signal bars use Windows' linear mapping from -100...-50 dBm to 0...100 quality.
 
 ## Windows native backend
 
@@ -68,20 +71,20 @@ remain unchanged; local hardware visibility/order and CPU chart mode persist.
   remainder of physical RAM, not Linux MemAvailable. Swap is reported by sysctl.
 - Physical disks: IOBlockStorageDriver read/write byte deltas and mean request
   service time. Busy percentage is deliberately not derived by summing overlapping
-  requests. The upper chart shows IOPS and the lower chart shows read/write throughput.
+  requests. The standard active-time chart stays unavailable; the lower chart shows read/write throughput.
   A one-time built-in diskutil query identifies the system APFS physical store,
-  so its capacity/free-space values appear on the corresponding disk page.
+  so its capacity and formatted size appear on the corresponding disk page.
 - Network: 64-bit `NET_RT_IFLIST2` interface counters and link speed, with byte
   deltas divided by actual sample duration. Physical active
   interfaces appear by default; virtual interfaces are available in Edit.
   macOS may withhold Wi-Fi SSID without location permission; no permission is requested.
-- GPU: IOKit driver Device/Renderer/Tiler utilization when available. These are
-  driver-reported counters and may vary across macOS releases. Video utilization,
-  temperature and power are not fabricated. Unified memory is the whole-system
-  pool; GPU driver memory is a separate reported allocation, not extra RAM.
+- GPU: IOKit Device utilization supplies the overall statistic. Its Renderer/Tiler
+  and allocation counters are retained by the sampler but are not relabelled as
+  WDDM engine or shared-memory readings. The corresponding chart values remain
+  unavailable until equivalent measurements are exposed.
 
 Memory charts retain their last known capacity when disconnected. Historical
 samples keep the same scale while current readings remain unavailable.
 
-本机固定显示在机器列表首位。无法可靠读取的温度、功耗不显示；磁盘图显示 IOPS 和读写速度，
-不将并行请求耗时冒充活动时间。统一内存不会重复计入 GPU 内存。
+本机固定显示在机器列表首位。各页沿用 Windows 任务管理器的布局和字段；取不到对应数值时显示 `—`。
+统一内存设备使用共享 GPU 内存栏，不拿整机内存用量代替 GPU 用量。

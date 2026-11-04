@@ -96,7 +96,7 @@ func number(_ value: Double?, _ suffix: String = "", digits: Int = 1) -> String 
 }
 func bytes(_ value: Double?, perSecond: Bool = false) -> String {
     guard let value else { return "—" }
-    let units = perSecond ? ["B/s", "KiB/s", "MiB/s", "GiB/s"] : ["B", "KiB", "MiB", "GiB", "TiB"]
+    let units = perSecond ? ["B/s", "KB/s", "MB/s", "GB/s"] : ["B", "KB", "MB", "GB", "TB"]
     var v = value; var i = 0
     while abs(v) >= 1024 && i < units.count - 1 { v /= 1024; i += 1 }
     return number(v, " " + units[i])

@@ -237,7 +237,7 @@ struct ChartPoint {
     case .network:
         let type = device.metadata["type"] ?? device.model
         return type == "Wi-Fi" ? "Wi-Fi" : tr("以太网", "Ethernet")
-    case .gpu: return device.name
+    case .gpu: return device.name == "GPU" ? "GPU 0" : device.name
     }
 }
 
