@@ -30,7 +30,7 @@ A native Swift/AppKit macOS performance monitor for NVIDIA DGX Spark and Windows
 
 ### 指标说明
 
-各性能页按同一硬件运行 Windows 时的任务管理器布局呈现。统一内存设备使用共享 GPU 内存栏；没有对应数据的字段显示 `—`。完整口径见 [metrics.md](docs/metrics.md)。
+各性能页保留 Windows 任务管理器的外观和排列，使用设备实际提供的指标。Mac 磁盘显示读写速度和 IOPS；GPU 显示驱动提供的活动和内存读数。完整口径见 [metrics.md](docs/metrics.md)。
 
 ### Windows 远端
 
@@ -58,7 +58,7 @@ Preview archives are ad-hoc signed, **not notarized**. Use macOS's normal Privac
 
 Windows 11 needs its built-in OpenSSH Server enabled and working SSH authentication. No Python, CPU-Z, HWiNFO, additional .NET runtime or monitoring service is installed. Built-in PowerShell 5.1 compiles the small included C# system-API declarations. A temporary sampler is uploaded to the account's default TEMP directory and deleted before execution.
 
-Windows pages use actual processor/thread counts, handle counts, memory pools, drive letters and WDDM GPU engines. Each of the four GPU graphs has an engine selector. Dedicated/shared GPU memory comes from DXGI and performance counters. The same Task Manager layout is used on other hosts, with unavailable readings shown as `—`. CPU temperature and power fields are omitted; compressed-memory size is not yet collected on Windows.
+Windows pages use actual processor/thread counts, handle counts, memory pools, drive letters and WDDM GPU engines. Each of the four GPU graphs has an engine selector. Dedicated/shared GPU memory comes from DXGI and performance counters. Other hosts keep the Task Manager appearance while showing their available metrics under accurate labels. CPU temperature and power fields are omitted; compressed-memory size is not yet collected on Windows.
 
 ## Build / 构建
 

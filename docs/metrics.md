@@ -2,7 +2,7 @@
 
 All reads are unprivileged. Null means unavailable; it is never converted to zero. Charts have a 60-second timestamp axis anchored to the latest received sample; redraws do not scroll ahead of the data and a retained boundary sample is clipped at the left edge; rates use remote monotonic elapsed time.
 
-The native app uses Windows Task Manager's Performance-page layout and fields for every host. A field without an equivalent source stays unavailable. Network pages show one interface-throughput chart; RDMA has no additional chart or detail rows. CPU/disk temperatures, power, load, IOPS and OS-specific memory breakdowns are not added to these pages.
+The native app keeps Windows Task Manager's Performance-page appearance and arrangement, using the actual metrics each host provides. Labels identify substitutions: Mac disks show read/write rates and IOPS, Mac memory uses App/Wired/Swap, and GPU graphs use the driver's own activity names. Metadata without a reading is omitted. Network pages retain one interface-throughput chart; RDMA has no additional chart or detail rows.
 
 | Metric | Source and calculation |
 |---|---|
@@ -26,7 +26,7 @@ Counter resets or the initial baseline yield unavailable rates. Broken streams r
 
 CPU process/thread counts are Linux process and schedulable-task counts; cache sizes are summed over distinct sysfs shared-cache groups. Disk response time is the read/write time delta divided by completed operations. Network graph labels use decimal bits per second. Memory/disk labels follow Task Manager's KB/MB/GB notation with 1,024-based scaling.
 
-GPU pages use four engine charts and dedicated/shared GPU-memory charts. Devices without dedicated memory have only the shared-memory chart. Overall utilization remains a separate statistic; it is not substituted for 3D or Copy activity. Only GPU-specific allocations can populate the memory charts. Whole-system RAM use is shown on the Memory page. Missing engine readings and GPU-memory limits remain unavailable; Windows' half-RAM shared-memory limit is not imposed on other operating systems.
+Windows GPU pages retain their engine charts and measured dedicated/shared allocations. Spark graphs use the NVIDIA driver's overall, memory-activity, encoder and decoder readings. Mac graphs use Device, Renderer and Tiler activity plus driver-wide allocated system memory. The Mac allocation chart scales to its observed range; its axis is not a hard allocation limit. Whole-system RAM use stays on the Memory page.
 
 Network metadata comes from NetworkManager (`nmcli device show`) and sysfs. Wi-Fi SSID, signal in dBm, radio frequency and actual Rx/Tx negotiated rates come from `iw dev <interface> link` without scanning or changing connections. The Wi-Fi protocol is derived from the active link's EHT/HE/VHT/MCS report, not the adapter's advertised maximum. SSID, DNS suffix/server and MAC are refreshed with inventory every 30 seconds; signal and negotiated rates update each sample. A DNS suffix and DNS server address are separate fields. IPv6 includes link-local addresses. An unconfigured DNS field remains unavailable.
 
@@ -63,7 +63,9 @@ remain unchanged; local hardware visibility/order and CPU chart mode persist.
   active frequency and show unavailable rather than an invented minimum.
   IOReport is a private system API and requires no elevated helper.
 - CPU process count uses the filled PID enumeration, rather than its buffer-size
-  estimate. Cache totals sum all performance/efficiency core groups: L1 includes
+  estimate. Live thread count comes from `PROCESSOR_SET_LOAD_INFO`; virtualization
+  availability comes from `kern.hv_support`. Peak DVFS frequency is labelled
+  maximum clock, not base speed. Cache totals sum all performance/efficiency core groups: L1 includes
   instruction and data caches per core; shared L2/L3 is counted once per group.
   Uptime and sampling intervals use the monotonic raw clock, which includes sleep.
 - Memory: estimated app pages = internal − purgeable, bounded at zero;
@@ -71,20 +73,22 @@ remain unchanged; local hardware visibility/order and CPU chart mode persist.
   remainder of physical RAM, not Linux MemAvailable. Swap is reported by sysctl.
 - Physical disks: IOBlockStorageDriver read/write byte deltas and mean request
   service time. Busy percentage is deliberately not derived by summing overlapping
-  requests. The standard active-time chart stays unavailable; the lower chart shows read/write throughput.
+  requests. The upper chart shows completed operations per second (IOPS); the
+  lower chart and sidebar show read/write throughput. Mean response time is zero
+  for a valid interval with no completed operations. Virtual disk images are labelled separately.
   A one-time built-in diskutil query identifies the system APFS physical store,
   so its capacity and formatted size appear on the corresponding disk page.
 - Network: 64-bit `NET_RT_IFLIST2` interface counters and link speed, with byte
   deltas divided by actual sample duration. Physical active
   interfaces appear by default; virtual interfaces are available in Edit.
   macOS may withhold Wi-Fi SSID without location permission; no permission is requested.
-- GPU: IOKit Device utilization supplies the overall statistic. Its Renderer/Tiler
-  and allocation counters are retained by the sampler but are not relabelled as
-  WDDM engine or shared-memory readings. The corresponding chart values remain
-  unavailable until equivalent measurements are exposed.
+- GPU: IOKit Device/Renderer/Tiler counters populate the activity charts under
+  their original names. `In use system memory` supplies the GPU driver-memory
+  reading. Neither per-process Metal allocations nor its recommended working-set
+  size is substituted for a global hard limit.
 
 Memory charts retain their last known capacity when disconnected. Historical
 samples keep the same scale while current readings remain unavailable.
 
-本机固定显示在机器列表首位。各页沿用 Windows 任务管理器的布局和字段；取不到对应数值时显示 `—`。
-统一内存设备使用共享 GPU 内存栏，不拿整机内存用量代替 GPU 用量。
+本机固定显示在机器列表首位。保留 Windows 任务管理器外观，使用系统实际提供的指标并按实际含义标注。
+Mac 磁盘显示读写速度和 IOPS；GPU 显示驱动活动与内存用量。采样尚未建立基线或连接中断时保留空值。

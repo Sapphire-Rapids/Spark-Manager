@@ -55,7 +55,7 @@ struct ModelTests {
         #expect(pane.detailScroll.contentView.bounds.origin.y == before)
         #expect(pane.details.first!.0 === field)
         pane.frame.size.height = 1000; pane.layoutSubtreeIfNeeded()
-        #expect(pane.charts.count == 5)
+        #expect(pane.charts.count == 4)
         #expect(pane.charts[0].frame.height > graphHeight)
         #expect(pane.details.allSatisfy { $0.0.frame.maxY <= pane.content.bounds.height })
     }

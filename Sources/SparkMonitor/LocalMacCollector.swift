@@ -152,7 +152,20 @@ import CoreWLAN
             let pidCount = pids.withUnsafeMutableBytes { proc_listallpids($0.baseAddress, Int32($0.count)) }
             if pidCount >= 0 { cpuValues["processes"] = Double(pidCount) }
         }
+        var processorSet: processor_set_name_t = 0
+        if processor_set_default(hostPort, &processorSet) == KERN_SUCCESS {
+            defer { mach_port_deallocate(mach_task_self_, processorSet) }
+            var load = processor_set_load_info_data_t()
+            var loadCount = mach_msg_type_number_t(MemoryLayout<processor_set_load_info_data_t>.size / MemoryLayout<integer_t>.size)
+            let result = withUnsafeMutablePointer(to: &load) { pointer in
+                pointer.withMemoryRebound(to: integer_t.self, capacity: Int(loadCount)) {
+                    processor_set_statistics(processorSet, PROCESSOR_SET_LOAD_INFO, $0, &loadCount)
+                }
+            }
+            if result == KERN_SUCCESS { cpuValues["threads"] = Double(load.thread_count) }
+        }
         var cpuMeta = ["architecture": sysString("hw.machine"), "cores": String(Int(sysNumber("hw.physicalcpu") ?? Double(count))), "logicalProcessors": String(count), "sockets": "1"]
+        if let available = sysNumber("kern.hv_support") { cpuMeta["virtualization"] = String(available != 0) }
         for (key, name) in [("performanceCores", "hw.perflevel0.physicalcpu"), ("efficiencyCores", "hw.perflevel1.physicalcpu")] {
             if let n = sysNumber(name) { cpuMeta[key] = String(Int(n)) }
         }
@@ -202,6 +215,13 @@ import CoreWLAN
 
         services("IOBlockStorageDriver") { driver in
             guard let raw = property(driver, "Statistics") as? [String: NSNumber] else { return }
+            var virtual = false
+            var provider: io_registry_entry_t = 0
+            if IORegistryEntryGetParentEntry(driver, kIOServicePlane, &provider) == KERN_SUCCESS {
+                defer { IOObjectRelease(provider) }
+                let protocolInfo = property(provider, "Protocol Characteristics") as? [String: Any]
+                virtual = protocolInfo?["Physical Interconnect"] as? String == "Virtual Interface"
+            }
             var child: io_iterator_t = 0
             guard IORegistryEntryGetChildIterator(driver, kIOServicePlane, &child) == KERN_SUCCESS else { return }
             defer { IOObjectRelease(child) }
@@ -216,9 +236,9 @@ import CoreWLAN
                 var values: [String: Double?] = ["capacity": (property(media, "Size") as? NSNumber)?.doubleValue,
                     "read": rate(id, "Bytes (Read)", current, elapsed), "write": rate(id, "Bytes (Write)", current, elapsed)]
                 // IOStorage request service times overlap and are not disk busy time.
-                if let readOps = rate(id, "Operations (Read)", current, elapsed), let writeOps = rate(id, "Operations (Write)", current, elapsed), readOps + writeOps > 0,
+                if let readOps = rate(id, "Operations (Read)", current, elapsed), let writeOps = rate(id, "Operations (Write)", current, elapsed),
                    let readTime = rate(id, "Total Time (Read)", current, elapsed), let writeTime = rate(id, "Total Time (Write)", current, elapsed) {
-                    values["latency"] = (readTime + writeTime) / (readOps + writeOps) / 1_000_000
+                    values["latency"] = readOps + writeOps > 0 ? (readTime + writeTime) / (readOps + writeOps) / 1_000_000 : 0
                 }
                 if let reads = rate(id, "Operations (Read)", current, elapsed), let writes = rate(id, "Operations (Write)", current, elapsed) {
                     values["operations"] = reads + writes
@@ -229,7 +249,7 @@ import CoreWLAN
                     values["free"] = space.volumeAvailableCapacity.map(Double.init)
                 }
                 devices.append(HardwareDevice(id: id, kind: .disk, name: bsd, model: String(cString: name), defaultVisible: true,
-                    metadata: ["type": system ? "SSD (APFS)" : "Storage", "system": String(system), "index": String(devices.filter { $0.kind == .disk }.count)]))
+                    metadata: ["type": virtual ? "Disk image" : (system ? "SSD (APFS)" : "Storage"), "system": String(system), "index": String(devices.filter { $0.kind == .disk }.count)]))
                 metrics[id] = DeviceMetrics(values: values)
             }
         }
@@ -312,7 +332,7 @@ import CoreWLAN
                 "engine:2": stats["Tiler Utilization %"]?.doubleValue,
                 "renderer": stats["Renderer Utilization %"]?.doubleValue, "tiler": stats["Tiler Utilization %"]?.doubleValue,
                 "allocated": stats["In use system memory"]?.doubleValue]
-            let meta = ["engine:0": "GPU", "engine:1": "Renderer", "engine:2": "Tiler", "engine:3": "Video (unavailable)", "driver": property(gpu, "CFBundleIdentifier") as? String ?? "", "cores": (property(gpu, "gpu-core-count") as? NSNumber)?.stringValue ?? ""]
+            let meta = ["engine:0": "GPU", "engine:1": "Renderer", "engine:2": "Tiler", "driver": property(gpu, "CFBundleIdentifier") as? String ?? "", "cores": (property(gpu, "gpu-core-count") as? NSNumber)?.stringValue ?? ""]
             devices.append(HardwareDevice(id: id, kind: .gpu, name: "GPU", model: property(gpu, "model") as? String ?? "Apple GPU", defaultVisible: true, metadata: meta))
             metrics[id] = DeviceMetrics(values: values)
         }
